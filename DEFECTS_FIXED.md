@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 73 tests (Spark, API, dashboard), plus CI on every push |
+| No tests | 74 tests (Spark, API, dashboard), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503 rather than 500.
 - `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all three groups (73 tests); the Spark group still runs as a
+- `pytest` runs all three groups (74 tests); the Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -627,3 +627,17 @@ tests. **Changed:** `spark_session()` pins `PYSPARK_PYTHON` and
 sets them, and a new test runs a real Python worker and
 checks it reports the driver's interpreter version, so a broken worker launch
 fails with that sentence instead of a connection error.
+
+### 66. A dependency's type stubs could stop the type check entirely
+The first CI run failed in the lint job with
+`numpy/__init__.pyi:737: error: Type statement is only supported in Python
+3.12 and greater ... errors prevented further checking`. mypy is configured
+for Python 3.10, the version the Spark image runs, so it refuses to parse
+stubs written with PEP 695 `type` statements - and numpy 2.5, installed fresh
+on the runner, writes 65 of them. The development machines had numpy 2.4 and
+saw nothing. The project's own code was never checked at all that run.
+**Changed:** `pyproject.toml` tells mypy not to follow numpy's stubs (nothing
+here imports numpy; it arrives with pandas), and a test asserts both that
+setting and the 3.10 target, so raising one without the other fails. Verified
+by reproducing the exact error under Python 3.12 with numpy 2.5.3 and
+watching it clear.
