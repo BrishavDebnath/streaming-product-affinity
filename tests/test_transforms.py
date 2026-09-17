@@ -19,7 +19,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 from src.common import catalog, config, scoring
 from src.streaming import transforms as T
@@ -34,6 +35,13 @@ def check(name, ok, detail=""):
 
 
 def spark_session():
+    # PySpark launches a Python worker per executor, and without this it picks
+    # whatever "python3" resolves to. On Windows that name is a Microsoft Store
+    # stub, so every worker dies with "Python worker failed to connect back";
+    # in a venv it would silently use the system interpreter instead. Point
+    # both ends at the interpreter running these tests.
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
     return (SparkSession.builder
             .appName("transform-tests")
             .master("local[2]")
@@ -664,6 +672,7 @@ def test_progress_listener_records_spark_progress():
     """The listener must be constructible and must read the progress OBJECTS
     PySpark hands it. Both were broken, so /metrics never saw Spark."""
     from types import SimpleNamespace as NS
+
     from src.streaming import job
 
     try:
@@ -871,7 +880,9 @@ def test_partition_writers_can_be_shipped_to_workers():
     """
     import importlib.util
     import threading
+
     from pyspark import cloudpickle
+
     from src.common import mongo
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -916,7 +927,9 @@ def test_sinks_stamp_rows_when_they_are_written():
     rows reach MongoDB, not the moment foreachBatch starts (Spark computes the
     batch lazily after that), and every written row must carry it."""
     from datetime import datetime, timezone
+
     from pyspark.sql import Row
+
     from src.common import mongo
     from src.streaming import job
 
@@ -1037,6 +1050,19 @@ def test_benchmark_helpers():
           and engine.is_running("x"))
 
 
+def test_test_dependencies_are_declared():
+    """Anything the tests import must be in requirements-test.txt, or a clean
+    machine (and CI) fails at collection - which is how httpx2 was missed."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    declared = open(os.path.join(root, "requirements-test.txt"),
+                    encoding="utf-8").read()
+    for package in ("pytest", "pytest-cov", "mongomock", "httpx2", "pyspark"):
+        check(f"requirements-test.txt declares {package}",
+              package in declared, declared)
+    check("pyspark is pinned to the series the container runs",
+          "pyspark>=4.1.3,<4.2" in declared, declared)
+
+
 def test_kafka_clients_use_only_known_settings():
     """kafka-python 3 rejects unknown settings at runtime (buffer_memory and
     api_version_auto_timeout_ms both slipped through once). Check every
@@ -1108,6 +1134,22 @@ def test_state_store_is_available(spark):
         check("the state store class exists in this Spark", True)
     except Exception as exc:                          # noqa: BLE001
         check("the state store class exists in this Spark", False, str(exc)[:200])
+
+
+def test_python_workers_run_this_interpreter(spark):
+    """Every UDF and RDD map runs in a separate Python process that Spark
+    launches itself. If it launches the wrong interpreter - or, on Windows,
+    the Store stub named python3 - the failure is "Python worker failed to
+    connect back", which says nothing about the cause."""
+    versions = (spark.sparkContext.parallelize([0, 1], 2)
+                .map(lambda _: (sys.executable, sys.version_info[:2]))
+                .collect())
+    check("python workers start at all", len(versions) == 2, str(versions))
+    check("workers run the same Python as the driver",
+          all(v[1] == sys.version_info[:2] for v in versions),
+          f"driver {sys.version_info[:2]}, workers {[v[1] for v in versions]}")
+    check("the interpreter Spark launches is pinned, not resolved from PATH",
+          os.environ.get("PYSPARK_PYTHON"), "PYSPARK_PYTHON is unset")
 
 
 def test_undefined_lift_ranks_below_defined_lift():
@@ -1182,6 +1224,7 @@ def main():
     test_benchmark_helpers()
     test_benchmark_tools_are_wired()
     test_kafka_clients_use_only_known_settings()
+    test_test_dependencies_are_declared()
     spark = spark_session()
     spark.sparkContext.setLogLevel("ERROR")
     try:
@@ -1199,6 +1242,7 @@ def main():
         test_streaming_end_to_end(spark)
         test_join_state_is_evicted_over_time(spark)
         test_state_store_is_available(spark)
+        test_python_workers_run_this_interpreter(spark)
     finally:
         spark.stop()
 

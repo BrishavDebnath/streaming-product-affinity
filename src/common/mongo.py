@@ -11,9 +11,10 @@ every ~20 seconds. Functions from an importable module are pickled BY
 REFERENCE, so each worker imports this module and keeps its own cache.
 """
 
+
 from pymongo import MongoClient
 
-_CLIENTS = {}
+_CLIENTS: dict[str, MongoClient] = {}
 
 
 def client(uri: str) -> MongoClient:

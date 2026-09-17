@@ -120,7 +120,7 @@ def main():
         if (i + 1) % 100 == 0:
             print(f"  {i + 1}/{args.sessions} sessions, {sent:,} events")
 
-    for i in range(args.malformed):
+    for _ in range(args.malformed):
         producer.send(config.TOPIC_EVENTS, key=catalog.USERS[0],
                       value=b"{ not json at all")
         sent += 1

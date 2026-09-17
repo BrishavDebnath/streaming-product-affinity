@@ -1,0 +1,53 @@
+# Tooling config only. The project is run from Docker Compose, not installed
+# as a package, so there is no [project] section and no build backend.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import mode "importlib" keeps tests/ out of sys.modules games; the project
+# root is added by tests/conftest.py so `src.` imports work either way.
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:pyspark.*",
+    "ignore::DeprecationWarning:kafka.*",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/ui/*"]          # the dashboard is covered by its own AppTest run
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+
+[tool.ruff]
+line-length = 88
+# The Spark container runs Python 3.10, so rules must not suggest syntax
+# newer than that (datetime.UTC, for instance, is 3.11).
+target-version = "py310"
+exclude = [".venv", "docs", "results", "test-logs"]
+
+[tool.ruff.lint]
+# E/F/W: real errors and undefined names. I: import order. B: bugbears such as
+# mutable default arguments. UP: syntax that is outdated for this Python.
+select = ["E4", "E7", "E9", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    "E402",      # scripts add the project root to sys.path before importing
+    "SIM108",    # a ternary is not always clearer than an if/else
+    "B008",      # FastAPI's Query() default is the documented style
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests read files to assert on their contents; a context manager per read
+# would bury the assertion.
+"tests/*" = ["E501", "SIM115", "SIM117", "B011"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src", "scripts"]
+# PySpark, Streamlit and kafka-python ship incomplete or no type information;
+# checking this project's own code against them is the useful part.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = false   # most functions here are deliberately untyped
+exclude = "(^|/)(docs|results|test-logs)/"

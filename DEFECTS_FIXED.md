@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 150 checks against a real SparkSession, plus CI |
+| No tests | 73 tests (Spark, API, dashboard), plus CI on every push |
 
 
 ---
@@ -570,3 +570,60 @@ one does not. The same run showed 10,000 events/s was not the ceiling
 the code instead of needing `run --build`, which had rebuilt and restarted
 the API before every test, and the load generator no longer prints an
 idempotence warning per process.
+
+---
+
+# Eleventh pass - test tooling and CI
+
+### 62. The tests only covered Spark, and CI barely ran
+The suite tested the transforms and the streaming plan, but nothing ran the
+API or the dashboard, and CI ran four lint rules and that one file.
+**Changed:**
+- `tests/test_api.py` - 23 tests driving the real FastAPI app over an
+  in-memory MongoDB (mongomock): sums across windows, weak pairs hidden, the
+  trending fallback, an unknown product, the ranking methods, graph edges,
+  `/metrics` output including "unknown" lag, and a database failure returning
+  503 rather than 500.
+- `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
+  that API, so a renamed field fails a test instead of the browser.
+- `pytest` runs all three groups (73 tests); the Spark group still runs as a
+  plain script inside the container, where pytest is not installed, and
+  `tests/conftest.py` turns any failed `check()` into a failed pytest test.
+- `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
+- CI now runs ruff and mypy, the suite on Python 3.11 and 3.12 with a coverage
+  summary, and `docker compose up` for the whole stack followed by the
+  end-to-end check.
+
+### 63. Lint and type checks had never been run properly
+Turning on ruff's real rule set found 91 problems and mypy found 17.
+**Changed:** all fixed - import order, outdated typing imports, `Optional`
+defaults that PEP 484 forbids, a `zip()` without `strict=`, a `try/except/pass`
+that hid errors, missing annotations on the module-level MongoDB clients and
+aggregation pipelines. Ruff targets Python 3.10, the version in the Spark
+image, so it never suggests syntax the container cannot run. Both are clean
+and CI fails on either.
+
+### 64. A clean machine could not run the tests at all
+Found on the first run outside the development environment: `pytest` stopped
+at collection with "the starlette.testclient module requires the httpx2
+package". Starlette 1.6 needs `httpx2` for its test client, and the
+development machine happened to have the older `httpx` from another project,
+so nothing complained there. **Changed:** `requirements-test.txt` declares
+`httpx2`, and a test checks that every package the tests import is declared.
+PySpark is now pinned to the 4.1.3 series as well: the container runs 4.1.3,
+and an unpinned install pulled 4.2.0, so a green test run would not have
+meant the same code passes in the container.
+
+### 65. The Spark tests could not run on a Windows host
+On Windows, twelve Spark tests failed with `Python worker failed to connect
+back`. The real cause was two lines further up in the stderr Spark captured:
+`Python was not found; run without arguments to install from the Microsoft
+Store`. PySpark starts one Python process per executor using whatever
+`PYSPARK_PYTHON` says, defaulting to `python3` - a name that on Windows hits
+the Store alias rather than the installed interpreter, and inside a virtualenv
+on any OS can resolve to a different interpreter than the one running the
+tests. **Changed:** `spark_session()` pins `PYSPARK_PYTHON` and
+`PYSPARK_DRIVER_PYTHON` to `sys.executable` unless the environment already
+sets them, and a new test runs a real Python worker and
+checks it reports the driver's interpreter version, so a broken worker launch
+fails with that sentence instead of a connection error.

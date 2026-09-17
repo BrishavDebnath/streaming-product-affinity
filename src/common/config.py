@@ -16,9 +16,10 @@ from pathlib import Path
 # own KAFKA_BOOTSTRAP / MONGO_URI even though .env holds the host values.
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv as _load_dotenv
 except ImportError:                       # optional - the defaults still apply
-    load_dotenv = None
+    _load_dotenv = None                   # type: ignore[assignment]
+load_dotenv = _load_dotenv
 if load_dotenv is not None and ENV_FILE.is_file():
     load_dotenv(ENV_FILE, override=False)
 
