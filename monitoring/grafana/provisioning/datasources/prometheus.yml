@@ -1,0 +1,12 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Fixed uid so the provisioned dashboard can reference it directly.
+    # Without this Grafana generates a random uid at startup and every panel
+    # renders "Datasource not found".
+    uid: affinity-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

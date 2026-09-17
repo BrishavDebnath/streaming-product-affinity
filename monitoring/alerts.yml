@@ -1,0 +1,50 @@
+# Alert rules, evaluated by Prometheus every 10 s. Firing alerts are listed at
+# http://localhost:9090/alerts (there is no Alertmanager in this local setup).
+groups:
+  - name: streaming-product-affinity
+    rules:
+      - alert: ApiDown
+        expr: up{job="affinity-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The API has not answered Prometheus for a minute."
+
+      - alert: PipelineStale
+        expr: affinity_pipeline_staleness_seconds > 120
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Spark has not saved any result for over 2 minutes."
+          description: "Check `docker compose logs spark` and that the producer is running."
+
+      - alert: KafkaLagGrowing
+        expr: >-
+          max by (query) (affinity_kafka_lag_offsets) > 1000
+          and max by (query) (deriv(affinity_kafka_lag_offsets[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spark query {{ $labels.query }} is falling behind Kafka."
+          description: "Over 1000 offsets behind and still rising. Lower the event rate or raise TRIGGER_INTERVAL."
+
+      - alert: BatchSlowerThanTrigger
+        # 10000 ms is the default TRIGGER_INTERVAL; change both together.
+        expr: affinity_batch_duration_ms > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spark query {{ $labels.query }} takes longer than its trigger interval."
+
+      - alert: StateStoreGrowing
+        # Bounded state levels off; steady growth means eviction stopped.
+        expr: deriv(affinity_state_rows[15m]) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Streaming state for {{ $labels.query }} keeps growing (see ADR 0001)."

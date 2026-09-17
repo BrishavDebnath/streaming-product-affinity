@@ -1,0 +1,40 @@
+# Spark 4.1 on Ubuntu 22.04: Java 17, Scala 2.13, Python 3.10.
+# (The previous base, apache/spark:3.5.3, shipped Python 3.8, which reached
+# end of life in October 2024.) Change SPARK_VERSION in one place to move
+# both the runtime and the Kafka connector together.
+ARG SPARK_VERSION=4.1.3
+FROM apache/spark:${SPARK_VERSION}-python3
+
+ARG SPARK_VERSION
+USER root
+
+# Bake the Kafka connector JARs (and their transitive deps) into the image so
+# the job never resolves --packages at runtime. Without this, every container
+# start hits Maven Central; with no network it simply fails.
+#
+# spark.jars.ivy is set explicitly: Spark 4 moved the default Ivy directory
+# (to ~/.ivy2.5.2), so a hard-coded ~/.ivy2 path would silently copy nothing.
+#
+# The MongoDB Spark connector is deliberately NOT included: all Mongo writes
+# go through pymongo inside foreachPartition.
+RUN echo "print('warmup')" > /tmp/warmup.py && \
+    /opt/spark/bin/spark-submit \
+        --master "local[1]" \
+        --conf spark.jars.ivy=/tmp/ivy \
+        --packages "org.apache.spark:spark-sql-kafka-0-10_2.13:${SPARK_VERSION}" \
+        /tmp/warmup.py && \
+    find /tmp/ivy -name "*.jar" \
+        ! -name "*sources.jar" ! -name "*javadoc.jar" \
+        -exec cp {} /opt/spark/jars/ \; && \
+    { ls /opt/spark/jars | grep -q "spark-sql-kafka-0-10_2.13-${SPARK_VERSION}.jar" \
+      || { echo "Kafka connector JAR was not copied" >&2; exit 1; }; } && \
+    rm -rf /tmp/warmup.py /tmp/ivy
+
+# Only what the Spark job and the tests import. PySpark is already in the
+# image; the host requirements (Streamlit, FastAPI, ...) are not needed here.
+COPY requirements-spark.txt /tmp/requirements-spark.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements-spark.txt && \
+    rm /tmp/requirements-spark.txt
+
+ENV PYTHONPATH=/app
+WORKDIR /app

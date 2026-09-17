@@ -1,0 +1,11 @@
+# Dependencies for the Spark CONTAINER only (Dockerfile.spark).
+#
+# The container only runs the Spark job and the test suite - never the API or
+# the dashboard - so the host requirements (Streamlit, FastAPI, ...) are not
+# installed there. The apache/spark:4.1.3 image runs Python 3.10.
+#
+# PySpark is already in the image.
+
+pymongo>=4.8,<5.0        # Mongo sinks and the progress listener
+python-dotenv>=1.0       # reads .env (src/common/config.py)
+kafka-python>=3.0        # imported by src/common/kafka_io.py, which the tests cover

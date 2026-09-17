@@ -1,0 +1,16 @@
+# Keep build contexts small: the local virtual environment alone can be
+# hundreds of MB.
+.git
+.github
+.venv
+venv
+.env
+.checkpoints
+test-logs
+results
+docs
+tests
+**/__pycache__
+.ruff_cache
+.pytest_cache
+*.log

@@ -1,0 +1,250 @@
+{
+  "uid": "affinity-pipeline",
+  "title": "Streaming Product Affinity Pipeline",
+  "tags": [
+    "kafka",
+    "spark",
+    "streaming"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 3,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Kafka consumer lag (offsets behind latest)",
+      "description": "The headline health metric. Flat = keeping up. Steadily rising = falling behind, queue growing.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "affinity_kafka_lag_offsets",
+          "refId": "A",
+          "legendFormat": "{{query}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Ingest vs processing rate",
+      "description": "Events read from Kafka against events processed, for the trending query (it reads each event once). Read rate staying above processed rate means the job is falling behind.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "rps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "affinity_input_rows_per_second{query=\"trending\"}",
+          "refId": "A",
+          "legendFormat": "read",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          }
+        },
+        {
+          "expr": "affinity_processed_rows_per_second{query=\"trending\"}",
+          "refId": "B",
+          "legendFormat": "processed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Batch duration",
+      "description": "Above the trigger interval means a batch cannot finish before the next one starts.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "affinity_batch_duration_ms",
+          "refId": "A",
+          "legendFormat": "{{query}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Streaming state store rows",
+      "description": "Must stay bounded. Linear growth means a stateful operator lost its windowing - see ADR 0001.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "affinity_state_rows",
+          "refId": "A",
+          "legendFormat": "{{query}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Related-product responses by source",
+      "description": "co_occurrence vs trending_fallback. A high fallback share means cold start or an empty pair window.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(affinity_related_products_total[1m])",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Dead-letter events",
+      "description": "Malformed events captured. A rising slope means an upstream producer changed.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "affinity_dead_letter_events",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "rejected events"
+        }
+      ]
+    }
+  ]
+}

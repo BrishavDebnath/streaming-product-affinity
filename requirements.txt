@@ -1,0 +1,21 @@
+# HOST runtime dependencies (your machine). Verified on Python 3.11 and 3.12.
+# The Spark container installs requirements-spark.txt instead.
+#
+# PySpark is deliberately NOT here. The Spark job runs inside the container
+# using the PySpark bundled with apache/spark:4.1.3, and the test suite runs
+# in that same container (`make test`). Installing PySpark on the host costs
+# several hundred MB and needs Java 17+.
+#
+# If you do want to run the tests natively, use requirements-test.txt.
+#
+# Ranges, not pins: a pinned file silently downgrades packages that other
+# projects on the same machine depend on.
+
+kafka-python>=3.0      # Kafka 4.x protocol support
+pymongo>=4.8,<5.0
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+streamlit>=1.50        # width="stretch"
+pandas>=2.0,<3.0
+requests>=2.32
+python-dotenv>=1.0

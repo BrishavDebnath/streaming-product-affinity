@@ -1,0 +1,247 @@
+# Streaming Product Affinity Pipeline - the whole stack, one command:
+#
+#     docker compose up -d --build
+#
+# Dashboard http://localhost:8501 · API http://localhost:8000/docs
+# Grafana   http://localhost:3000 · Prometheus http://localhost:9090
+#
+# Kafka runs in KRaft mode (no ZooKeeper), which is the only mode Kafka 4.x
+# supports. The official apache/kafka image is used rather than a vendor build.
+name: streaming-product-affinity
+
+# Shared settings for the Python services (API, dashboard, producer, seed,
+# smoke test). They talk to the other containers by service name.
+# No shared `image:` name on purpose: Compose builds these services in
+# parallel, and with one name they race to tag the same image ("image ...
+# already exists"). Each service gets its own tag; the layers are identical,
+# so BuildKit builds them once and the disk holds them once.
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile.app
+  env_file:
+    - path: .env
+      required: false
+  environment: &app-env
+    KAFKA_BOOTSTRAP: kafka:29092
+    MONGO_URI: mongodb://mongo:27017
+    API_BASE_URL: http://api:8000
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: affinity-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093
+      # HOST is for tools on your machine (localhost:9092); INTERNAL is what
+      # the containers use (kafka:29092).
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # Single broker: every internal topic must have replication factor 1.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # The clickstream topic is created explicitly by kafka-init below, with
+      # several partitions. Auto-creation would give it only one.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # The image pre-creates this directory owned by its non-root user, so
+      # the named volume below inherits the right permissions.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  # One-shot: creates the topic with KAFKA_PARTITIONS partitions (default 6)
+  # so Spark can read it in parallel, then exits.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    container_name: affinity-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+        --create --if-not-exists --topic clickstream
+        --partitions ${KAFKA_PARTITIONS:-6} --replication-factor 1
+        && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+        --describe --topic clickstream
+    restart: "no"
+
+  mongo:
+    image: mongo:8.0
+    container_name: affinity-mongodb
+    # MongoDB would otherwise size its cache from all of Docker's memory.
+    command: ["mongod", "--wiredTigerCacheSizeGB", "1"]
+    ports:
+      - "27018:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - mongo_data:/data/db
+
+  spark:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: affinity-spark
+    user: root
+    working_dir: /app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      MONGO_URI: mongodb://mongo:27017
+      # Checkpoints and RocksDB state live in a Docker volume, not in the
+      # project folder: writes to a Windows/macOS bind mount are slow.
+      CHECKPOINT_ROOT: /checkpoints
+      PYTHONPATH: /app
+    volumes:
+      - ./:/app
+      - ./spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+      - spark_checkpoints:/checkpoints
+    # service_healthy / completed_successfully: Spark does not start against
+    # a broker that is still booting or a topic that does not exist yet.
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    command: >
+      /opt/spark/bin/spark-submit
+        --master local[8]
+        --conf spark.driver.memory=4g
+        /app/src/streaming/job.py
+    ports:
+      - "4040:4040"
+    restart: on-failure
+
+  api:
+    <<: *app
+    container_name: affinity-api
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # One-shot: backfills 20 minutes of past sessions on a fresh stack so the
+  # dashboard has data at once. Skips itself if MongoDB already has results.
+  # It must finish before the producer starts: once live events move the
+  # watermark forward, back-dated events are dropped as late.
+  seed:
+    <<: *app
+    container_name: affinity-seed
+    command: ["python", "scripts/seed.py", "--minutes", "20", "--sessions", "400", "--if-empty"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+    restart: "no"
+
+  producer:
+    <<: *app
+    container_name: affinity-producer
+    command: ["python", "-m", "src.producer.producer"]
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  dashboard:
+    <<: *app
+    container_name: affinity-dashboard
+    command:
+      - streamlit
+      - run
+      - src/ui/dashboard.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # On demand only:  docker compose run --rm smoke
+  smoke:
+    <<: *app
+    container_name: affinity-smoke
+    profiles: ["tools"]
+    command: ["python", "scripts/smoke_test.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: affinity-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: affinity-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Anonymous read-only access: this is a local demo.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: light
+      # Open straight on the pipeline dashboard instead of Grafana's own
+      # "Welcome to Grafana" setup page, which means nothing to a visitor.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  kafka_data:
+  mongo_data:
+  spark_checkpoints:
+  prometheus_data:
+  grafana_data:

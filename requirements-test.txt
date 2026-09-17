@@ -1,0 +1,15 @@
+# OPTIONAL: only needed to run tests/test_transforms.py natively on the host
+# instead of in the container.
+#
+#     pip install -r requirements-test.txt
+#     PYTHONPATH=. python tests/test_transforms.py
+#
+# Costs several hundred MB and needs Java 17 or newer. The container route
+# is identical and needs neither:
+#
+#     make test
+#
+# Verified on PySpark 4.1.3 (Java 21). The container runs the same version.
+
+-r requirements.txt
+pyspark>=4.1,<5.0
