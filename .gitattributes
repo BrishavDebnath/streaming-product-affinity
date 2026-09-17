@@ -1,0 +1,9 @@
+# Store and check out every text file with LF line endings, on every OS.
+# The files are also read inside Linux containers (Python, YAML, Spark and
+# Prometheus config), and a Windows checkout would otherwise convert them to
+# CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
