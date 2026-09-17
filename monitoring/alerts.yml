@@ -21,15 +21,19 @@ groups:
           description: "Check `docker compose logs spark` and that the producer is running."
 
       - alert: KafkaLagGrowing
+        # Lag is a sawtooth: it climbs between triggers and drops after each
+        # batch, so its slope is noise. "Falling behind" means the LOWEST lag
+        # of the last 5 minutes is above the HIGHEST of the 5 minutes before.
         expr: >-
           max by (query) (affinity_kafka_lag_offsets) > 1000
-          and max by (query) (deriv(affinity_kafka_lag_offsets[5m])) > 0
+          and max by (query) (min_over_time(affinity_kafka_lag_offsets[5m]))
+            > max by (query) (max_over_time(affinity_kafka_lag_offsets[5m] offset 5m))
         for: 2m
         labels:
           severity: warning
         annotations:
           summary: "Spark query {{ $labels.query }} is falling behind Kafka."
-          description: "Over 1000 offsets behind and still rising. Lower the event rate or raise TRIGGER_INTERVAL."
+          description: "Over 1000 events unread and the backlog keeps rising. Lower the event rate, raise SHUFFLE_PARTITIONS, or give Spark more cores."
 
       - alert: BatchSlowerThanTrigger
         # 10000 ms is the default TRIGGER_INTERVAL; change both together.

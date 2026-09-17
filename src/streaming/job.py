@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pymongo import MongoClient, UpdateOne
 from pyspark.sql import SparkSession
 
-from src.common import config, mongo
+from src.common import config, kafka_io, mongo
 from src.streaming import transforms as T
 
 logging.basicConfig(
@@ -31,6 +31,9 @@ log = logging.getLogger("streaming.job")
 # three quarters of the Spark container's log was "Received command c on
 # object id ...". Only its warnings are useful.
 logging.getLogger("py4j").setLevel(logging.WARNING)
+# kafka-python (used to read the broker's latest offsets) logs every
+# connection step at INFO.
+logging.getLogger("kafka").setLevel(logging.WARNING)
 
 # MongoDB clients come from src.common.mongo: one per Python process, reused
 # across partitions and micro-batches. The cache must NOT live in this file -
@@ -49,8 +52,6 @@ def mongo_upsert(collection_name: str, key_fields):
     it.
     """
     def _write(batch_df, epoch_id):
-        written_at = datetime.now(timezone.utc)
-
         def _write_partition(rows):
             """
             Runs on the EXECUTOR, one connection per partition.
@@ -61,18 +62,27 @@ def mongo_upsert(collection_name: str, key_fields):
             ceiling on batch size. foreachPartition keeps the data distributed
             and writes in parallel.
             """
-            buffer = []
             coll = mongo.client(config.MONGO_URI)[config.MONGO_DB][collection_name]
+            buffer = []
+
+            def flush():
+                # Stamped when the rows are actually written. A time taken
+                # when foreachBatch starts is BEFORE Spark computes the batch
+                # (it is lazy), so latency and freshness read too low.
+                now = datetime.now(timezone.utc)
+                coll.bulk_write(
+                    [UpdateOne(key, {"$set": {**doc, "_updated_at": now}},
+                               upsert=True) for key, doc in buffer],
+                    ordered=False)
+                buffer.clear()
+
             for row in rows:
                 doc = row.asDict()
-                key = {f: doc[f] for f in key_fields}
-                doc["_updated_at"] = written_at
-                buffer.append(UpdateOne(key, {"$set": doc}, upsert=True))
+                buffer.append(({f: doc[f] for f in key_fields}, doc))
                 if len(buffer) >= 1000:      # bound memory per partition
-                    coll.bulk_write(buffer, ordered=False)
-                    buffer = []
+                    flush()
             if buffer:
-                coll.bulk_write(buffer, ordered=False)
+                flush()
 
         batch_df.foreachPartition(_write_partition)
         log.info("epoch=%s collection=%s written", epoch_id, collection_name)
@@ -82,22 +92,24 @@ def mongo_upsert(collection_name: str, key_fields):
 def mongo_append(collection_name: str):
     """Plain insert sink, used for the dead-letter queue where every row counts."""
     def _write(batch_df, epoch_id):
-        written_at = datetime.now(timezone.utc)
-
         def _write_partition(rows):
-            buffer = []
             coll = mongo.client(config.MONGO_URI)[config.MONGO_DB][collection_name]
-            for row in rows:
-                doc = row.asDict()
+            buffer = []
+
+            def flush():
                 # The TTL index is on _updated_at; without this field
-                # dead-letter rows never expired.
-                doc["_updated_at"] = written_at
-                buffer.append(doc)
+                # dead-letter rows never expired. Stamped at write time.
+                now = datetime.now(timezone.utc)
+                coll.insert_many([{**doc, "_updated_at": now} for doc in buffer],
+                                 ordered=False)
+                buffer.clear()
+
+            for row in rows:
+                buffer.append(row.asDict())
                 if len(buffer) >= 1000:
-                    coll.insert_many(buffer, ordered=False)
-                    buffer = []
+                    flush()
             if buffer:
-                coll.insert_many(buffer, ordered=False)
+                flush()
 
         batch_df.foreachPartition(_write_partition)
         log.debug("epoch=%s dead-letter batch written", epoch_id)
@@ -180,6 +192,28 @@ class ProgressRecorder:
         except Exception as exc:                          # noqa: BLE001
             log.debug("progress write skipped: %s", exc)
 
+    def _lag(self, sources):
+        """
+        Events each source still has to read, measured now, after the batch.
+
+        Spark's maxOffsetsBehindLatest compares against the offsets seen when
+        the batch was PLANNED, so it reads 0 whenever batches are not
+        size-capped (see kafka_io.latest_offsets). It is only used when
+        MAX_OFFSETS_PER_TRIGGER caps the batches; otherwise an unreadable
+        broker gives None ("unknown"), never a reassuring 0.
+        """
+        latest = kafka_io.latest_offsets(config.TOPIC_EVENTS,
+                                         config.KAFKA_BOOTSTRAP)
+        lags = []
+        for s in sources:
+            lag = kafka_io.offsets_behind(getattr(s, "endOffset", None),
+                                          latest, config.TOPIC_EVENTS)
+            if lag is None and config.MAX_OFFSETS_PER_TRIGGER > 0:
+                lag = _to_float((getattr(s, "metrics", None) or {})
+                                .get("maxOffsetsBehindLatest"))
+            lags.append(lag)
+        return lags
+
     def onQueryProgress(self, event):                     # noqa: N802
         p = event.progress
         sources = getattr(p, "sources", []) or []
@@ -187,6 +221,7 @@ class ProgressRecorder:
             "recorded_at": datetime.now(timezone.utc),
             "query": p.name,
             "batch_id": p.batchId,
+            "input_rows": getattr(p, "numInputRows", None),
             "input_rows_per_second": getattr(p, "inputRowsPerSecond", None),
             "processed_rows_per_second": getattr(p, "processedRowsPerSecond", None),
             "batch_duration_ms": getattr(p, "batchDuration", None),
@@ -195,9 +230,7 @@ class ProgressRecorder:
             # batch, so nothing was ever recorded.
             "state_rows": [getattr(so, "numRowsTotal", None)
                            for so in (getattr(p, "stateOperators", []) or [])],
-            "kafka_lag": [_to_float((getattr(s, "metrics", None) or {})
-                                    .get("maxOffsetsBehindLatest"))
-                          for s in sources],
+            "kafka_lag": self._lag(sources),
         }
         self._write(doc)
 

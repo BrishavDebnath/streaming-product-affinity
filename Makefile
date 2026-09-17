@@ -1,6 +1,6 @@
 # Shortcuts for macOS / Linux. On Windows, run the docker compose commands
 # shown in README.md directly - they do the same thing.
-.PHONY: help up down clean ps logs test smoke seed monitoring
+.PHONY: help up down clean ps logs test smoke loadtest recovery seed
 
 help:
 	@echo "make up         - build and start the whole stack"
@@ -8,6 +8,8 @@ help:
 	@echo "make logs       - follow the Spark job's log"
 	@echo "make test       - run the unit tests inside the Spark image"
 	@echo "make smoke      - end-to-end check against the running stack"
+	@echo "make loadtest   - throughput and latency benchmark (~25 min)"
+	@echo "make recovery   - kill and restart Spark, check nothing was lost"
 	@echo "make seed       - backfill 20 more minutes of history"
 	@echo "make down       - stop everything, keep the data"
 	@echo "make clean      - stop everything and delete all data"
@@ -33,6 +35,12 @@ test:
 
 smoke:
 	docker compose run --rm smoke
+
+loadtest:
+	docker compose run --rm loadtest
+
+recovery:
+	docker compose run --rm recovery
 
 seed:
 	docker compose run --rm --no-deps seed python scripts/seed.py --minutes 20 --sessions 400

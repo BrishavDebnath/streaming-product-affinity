@@ -17,8 +17,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "Kafka consumer lag (offsets behind latest)",
-      "description": "The headline health metric. Flat = keeping up. Steadily rising = falling behind, queue growing.",
+      "title": "Kafka consumer lag (events not yet read)",
+      "description": "Events each Spark query has not read yet, measured after every batch against the broker's latest offsets. A sawtooth up to (event rate x trigger interval) is normal; a rising floor means the job is falling behind.",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",

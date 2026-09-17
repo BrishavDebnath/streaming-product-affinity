@@ -3,38 +3,47 @@
 Every command runs from the project folder. Nothing needs to be installed on
 the host except Docker.
 
-## Verify fault tolerance (do this once, and record it)
-
-This is the demo that proves checkpointing is understood rather than merely
-configured.
+## Verify fault tolerance
 
 ```bash
-docker compose up -d --build                  # let it run ~3 minutes
-curl -s localhost:8000/stats
+docker compose run --rm recovery
+```
 
+Sends test traffic, kills the Spark container with SIGKILL after a minute,
+starts it again a minute later, and keeps sending. It then checks, per test
+product, that the events Kafka acknowledged equal the events counted in
+MongoDB, that no window is stored twice and that no minute is missing. Results
+go to the Recovery section of `docs/BENCHMARKS.md`. Options:
+`--rate 1000 --downtime 90`.
+
+To do the same by hand and watch it:
+
+```bash
 docker compose kill spark                     # hard kill, mid-stream
-sleep 30                                      # the producer keeps sending
-docker compose up -d spark                    # restart
-
+sleep 60                                      # the producer keeps sending
+docker compose up -d spark
 docker compose logs -f spark                  # watch it resume
-curl -s localhost:8000/stats
 ```
 
-**Expected:** the job resumes from its checkpointed Kafka offsets (kept in the
-`spark_checkpoints` volume). No gap in window coverage, and no duplicated
-counts, because the sinks upsert on a natural key (ADR 0004). While Spark is
-down, http://localhost:9090/alerts shows `PipelineStale` going from pending to
-firing after about three minutes, and clearing once Spark catches up.
+While Spark is down, http://localhost:9090/alerts shows `PipelineStale` going
+from pending to firing after about three minutes (if you wait that long), and
+clearing once Spark catches up.
 
-## Measure throughput
+## Measure throughput and latency
 
 ```bash
-python scripts/load_test.py --rates 100 500 1000 2500 5000 --seconds 60
+docker compose run --rm loadtest
+docker compose run --rm loadtest --rates 1000 5000 --seconds 60
 ```
 
-Writes `docs/BENCHMARKS.md` and `results/load_test.csv`. The highest rate at
-which lag stays flat is the sustainable throughput; once lag climbs batch over
-batch and never recovers, the pipeline is falling behind.
+Keep the live producer running: it moves event time forward, which the pair
+probes need. Writes `docs/BENCHMARKS.md` and `results/load_test.csv`. A rate
+"kept up" when Spark read at least 90% of what was sent, the unread backlog
+did not climb once the step had settled, and it was cleared within two
+trigger intervals after the step. The tools mount `src/` and `scripts/`, so
+code changes need no rebuild. Probe rows are removed at the
+end; run it on a stack you can reset afterwards (`docker compose down -v`) if
+you want clean dashboard history for screenshots.
 
 ## Alerts
 
@@ -69,7 +78,10 @@ http://localhost:9090/alerts.
 ## Diagnose: lag climbing
 
 1. `curl localhost:8000/metrics | grep affinity_` - check
-   `affinity_kafka_lag_offsets` and `affinity_state_rows` (one line per query).
+   `affinity_kafka_lag_offsets` (events not read yet, measured after each
+   batch) and `affinity_state_rows` (one line per query). A lag that returns
+   near zero after each batch is fine; a lag whose lowest point keeps rising
+   is not.
 2. State rows growing without bound means a stateful operator lost its
    windowing (see ADR 0001).
 3. `affinity_batch_duration_ms` above the trigger interval means the batch

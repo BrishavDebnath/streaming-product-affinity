@@ -128,6 +128,8 @@ arrive.
 | Status | `docker compose ps` |
 | Logs | `docker compose logs -f spark` (or `api`, `producer`, ...) |
 | End-to-end check (up to ~9 min) | `docker compose run --rm smoke` |
+| Throughput and latency benchmark (~25 min) | `docker compose run --rm loadtest` |
+| Crash-recovery test (~7 min) | `docker compose run --rm recovery` |
 | Unit tests (Spark container) | `docker compose run --rm --no-deps spark /opt/spark/bin/spark-submit /app/tests/test_transforms.py` |
 | Stop, keep data | `docker compose down` |
 | Stop and delete all data | `docker compose down -v` |
@@ -139,7 +141,7 @@ a fresh start (`docker compose down -v`), because Spark will not resume from a
 checkpoint whose plan has changed.
 
 A `Makefile` wraps the same commands for macOS and Linux (`make up`,
-`make smoke`, `make test`, ...).
+`make smoke`, `make test`, `make loadtest`, ...).
 
 ### Running scripts on your machine (optional)
 
@@ -244,15 +246,61 @@ dead-letter collection with the reason and the original payload, instead of
 becoming nulls. The producer emits malformed events at `MALFORMED_RATE` so the
 path is continuously exercised.
 
+**Exactly-once results across a crash.** `docker compose run --rm recovery`
+kills the Spark container mid-stream with SIGKILL, restarts it, and checks
+that every event Kafka acknowledged was counted exactly once. Spark resumes
+from the offsets and state in its checkpoint; a batch cut short by the kill is
+re-run, and the upserts make the re-run harmless.
+
 **Cold start is answered explicitly.** A product with no co-occurrence data
 yet returns trending products, and the response says
 `"source": "trending_fallback"` rather than pretending the two are the same.
 
 ---
 
+## Measured performance
+
+Measured on an 8-core i5-13450HX with 12 GB of memory given to Docker, with
+Kafka, Spark, MongoDB and the load generator all sharing those cores. Full
+results, and how to reproduce them: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+- **15,000 events/s sustained.** Spark read every event, the backlog stayed
+  flat and cleared 16 s after the load stopped. At 20,000 events/s it falls
+  behind: batches take 15.6 s against a 10 s trigger.
+- **An event reaches its trending row in about 8 s** (median) at 2,500-5,000
+  events/s, and in 15 s at the 95th percentile at 15,000 events/s. Most of
+  that is the wait for the next 10 s trigger.
+- **A product pair appears about 5 minutes after the events**, by design: its
+  window, the co-view gap and the watermark all have to pass first.
+- **Crash recovery:** Spark killed with SIGKILL under load wrote its first new
+  result 12 s after restarting and cleared the 38,471-event backlog 15 s after
+  restarting. All 120,224 events were counted exactly once - none lost, none
+  double-counted.
+- **The co-occurrence join held 4.7M events at 15,000 events/s** and stayed
+  bounded: RocksDB keeps that off the JVM heap, and the 2-minute co-view gap
+  is what caps it (`results/load_test.csv`).
+
+Two scripts produce these numbers against the running stack:
+
+- **`loadtest`** ramps the event rate (2,500 to 20,000 events/s by default,
+  90 s each) with six producer processes sending realistic sessions. For
+  each step it records what Spark itself reported (events read, batch time,
+  unread backlog) and whether Spark kept up: the backlog must not climb during
+  the step and must clear within two trigger intervals afterwards. Probe
+  events with unique product ids time the path from sending an event to its
+  row appearing in MongoDB.
+- **`recovery`** kills Spark under load and measures how quickly it resumes
+  and whether any event was lost or double-counted.
+
+Everything shares one machine's cores, so the figures describe a laptop, not
+a cluster. See [ADR 0010](docs/adr/0010-measuring-the-pipeline.md) for why
+the measurements are taken this way.
+
+---
+
 ## Tested
 
-The suite runs **116 checks** against a real local `SparkSession`. It needs
+The suite runs **150 checks** against a real local `SparkSession`. It needs
 no Kafka and no Mongo; run it inside the Spark container with the unit-test
 command above.
 
@@ -267,7 +315,12 @@ command above.
 - ten minutes of steady sessions, showing the join state stops growing once
   the co-view gap and watermark have passed
 - lift and PMI maths, and that pairs with an undefined lift rank below real ones
-- the monitoring listener can be built and reads Spark's progress objects
+- the monitoring listener can be built, reads Spark's progress objects, and
+  measures Kafka lag against the broker rather than Spark's planning snapshot
+- sinks stamp rows at the moment they are written, in bounded chunks, and
+  their writers can be shipped to Spark's Python workers
+- the benchmark helpers: percentiles, the kept-up rule, report sections, and
+  Docker's timestamps
 - the dashboard reads only fields the API actually returns
 - the session-generation rule, the RocksDB state store, and that Compose
   starts every service in a safe order with Prometheus loading its alerts
@@ -347,6 +400,9 @@ src/api/main.py            FastAPI serving layer and /metrics
 src/ui/dashboard.py        Streamlit dashboard
 scripts/seed.py            backfill of past sessions
 scripts/smoke_test.py      end-to-end assertion against a running stack
+scripts/load_test.py       throughput and latency benchmark
+scripts/recovery_test.py   crash-and-restart test
+src/common/bench.py        shared benchmark helpers (standard library only)
 monitoring/                Prometheus config, alert rules, Grafana dashboard
 tests/test_transforms.py   the test suite
 ```
@@ -367,6 +423,13 @@ related-products source mix, and the dead-letter count.
 `/metrics` reports the value *now*; Prometheus scrapes the API container
 (`api:8000`) every 10 s and keeps the history; Grafana draws it.
 
+**Kafka lag** is the number of events a query has not read yet, measured
+after each batch against the broker's latest offsets. Spark's own figure
+(`maxOffsetsBehindLatest`) compares with the offsets it saw when it *planned*
+the batch, so without a batch-size cap it is always 0. A sawtooth up to
+(event rate x trigger interval) is normal; a rising floor means falling
+behind.
+
 **Alert rules** (`monitoring/alerts.yml`) are evaluated by Prometheus and
 listed at http://localhost:9090/alerts: API down, pipeline stale for 2
 minutes, Kafka lag above 1000 and rising, batches slower than the trigger
@@ -381,9 +444,9 @@ It is harmless.
 
 | | |
 |---|---|
-| [docs/adr/](docs/adr/) | 9 architecture decision records — what was chosen, and what was rejected |
+| [docs/adr/](docs/adr/) | 10 architecture decision records — what was chosen, and what was rejected |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | fault-tolerance demo, load testing, diagnosing lag |
-| `docs/BENCHMARKS.md` | measured throughput. Not committed yet: run `scripts/load_test.py` to generate it |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | measured throughput, latency and crash recovery, written by the benchmark scripts |
 | [DEFECTS_FIXED.md](DEFECTS_FIXED.md) | every defect found and how it was verified |
 
 ## Licence
@@ -406,17 +469,15 @@ MIT - see [LICENSE](LICENSE).
 4. **Local Spark only.** `local[8]` in one container, never run on a real
    cluster, so executor tuning and network shuffles are untested.
 5. **No authentication** on the API or the dashboard.
-6. **Throughput is unmeasured** on production-like hardware. The producer
-   reports its own send rate; end-to-end latency is not instrumented beyond
-   the trigger interval.
+6. **Benchmarks are from one laptop.** Kafka, Spark, MongoDB and the load
+   generator share the same cores, so the numbers show relative behaviour
+   and where this setup saturates, not what a cluster would do.
 
 ## Roadmap
 
 Planned, **not implemented**. The pipeline is being shaped so these can be
 added without rewriting what exists.
 
-- **Measured performance** - load and recovery tests with published numbers
-  (the partitioned topic and RocksDB state store they rely on are in place).
 - **Real data and evaluation** - replay the public RetailRocket clickstream and
   measure hit rate@10 against a bestseller baseline.
 - **Machine learning (later)** - the ranking methods are designed to be

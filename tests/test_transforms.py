@@ -673,23 +673,69 @@ def test_progress_listener_records_spark_progress():
         check("progress listener can be instantiated", False, str(exc))
         return
 
+    from src.common import kafka_io
+
     written = []
     listener._write = written.append
+    topic = config.TOPIC_EVENTS
+    end_offset = json.dumps({topic: {"0": 100, "1": 90}})
     event = NS(progress=NS(
-        name="trending", batchId=3, inputRowsPerSecond=12.5,
+        name="trending", batchId=3, numInputRows=125, inputRowsPerSecond=12.5,
         processedRowsPerSecond=20.0, batchDuration=150,
         stateOperators=[NS(numRowsTotal=7)],
-        sources=[NS(metrics={"maxOffsetsBehindLatest": "42"})]))
+        sources=[NS(endOffset=end_offset,
+                    metrics={"maxOffsetsBehindLatest": "0"})]))
+    real_latest = kafka_io.latest_offsets
     try:
+        kafka_io.latest_offsets = lambda *_: {0: 150, 1: 100}
         listener.onQueryProgress(event)
+        kafka_io.latest_offsets = lambda *_: None     # broker unreachable
+        event.progress.sources[0].metrics = {"maxOffsetsBehindLatest": "42"}
+        listener.onQueryProgress(event)               # uncapped batches
+        capped = config.MAX_OFFSETS_PER_TRIGGER
+        config.MAX_OFFSETS_PER_TRIGGER = 50000
+        try:
+            listener.onQueryProgress(event)           # capped batches
+        finally:
+            config.MAX_OFFSETS_PER_TRIGGER = capped
     except Exception as exc:                          # noqa: BLE001
         check("listener reads Spark progress objects", False, repr(exc))
         return
+    finally:
+        kafka_io.latest_offsets = real_latest
     doc = written[0] if written else {}
     check("listener records state-store rows", doc.get("state_rows") == [7],
           str(doc))
-    check("listener records Kafka lag as a number",
-          doc.get("kafka_lag") == [42.0], str(doc))
+    check("listener records how many rows each batch read",
+          doc.get("input_rows") == 125, str(doc))
+    check("listener measures Kafka lag against the broker's latest offsets "
+          "(50 + 10 events behind)", doc.get("kafka_lag") == [60.0], str(doc))
+    unknown = written[1] if len(written) > 1 else {}
+    check("without the broker, uncapped batches report lag as unknown, not 0",
+          unknown.get("kafka_lag") == [None], str(unknown))
+    fallback = written[2] if len(written) > 2 else {}
+    check("with capped batches, Spark's own lag figure is the fallback",
+          fallback.get("kafka_lag") == [42.0], str(fallback))
+    from kafka import KafkaConsumer
+    unknown_keys = set(kafka_io.LAG_CONSUMER_CONFIG) - set(KafkaConsumer.DEFAULT_CONFIG)
+    check("the lag reader only uses settings this kafka-python accepts",
+          not unknown_keys, str(unknown_keys))
+
+
+def test_kafka_lag_arithmetic():
+    from src.common.kafka_io import offsets_behind
+    topic = "clickstream"
+    latest = {0: 10, 1: 7, 2: 5}
+    check("lag sums what each partition still has to read",
+          offsets_behind('{"clickstream":{"0":4,"1":7,"2":3}}', latest, topic) == 8.0)
+    check("a partition read past the snapshot never counts negative",
+          offsets_behind({topic: {"0": 12, "1": 7, "2": 5}}, latest, topic) == 0.0)
+    check("unknown offsets give None, not 0",
+          offsets_behind(None, latest, topic) is None
+          and offsets_behind('{"clickstream":{"0":1}}', None, topic) is None
+          and offsets_behind('{"other":{"0":1}}', latest, topic) is None
+          and offsets_behind('{"clickstream":{"0":1}}', latest, topic) is None
+          and offsets_behind("not json", latest, topic) is None)
 
 
 def test_kafka_serializers():
@@ -790,6 +836,8 @@ def test_compose_runs_the_whole_stack():
         check(f"compose defines {service[:-1]}", f"\n  {service}" in compose)
     check("the topic is created with several partitions",
           "--partitions ${KAFKA_PARTITIONS:-6}" in compose)
+    check("the topic keeps events for a bounded time",
+          "retention.ms=${KAFKA_RETENTION_MS:-86400000}" in compose)
     check("the producer waits for the backfill to finish",
           "seed:\n        condition: service_completed_successfully" in compose)
     check("checkpoints live in a Docker volume",
@@ -863,6 +911,192 @@ def test_partition_writers_can_be_shipped_to_workers():
           not hasattr(job_main, "_MONGO_CLIENTS"))
 
 
+def test_sinks_stamp_rows_when_they_are_written():
+    """_updated_at feeds freshness, latency and TTL. It must be the time the
+    rows reach MongoDB, not the moment foreachBatch starts (Spark computes the
+    batch lazily after that), and every written row must carry it."""
+    from datetime import datetime, timezone
+    from pyspark.sql import Row
+    from src.common import mongo
+    from src.streaming import job
+
+    class FakeCollection:
+        def __init__(self):
+            self.calls = []
+
+        def bulk_write(self, ops, ordered):
+            self.calls.append(("bulk", datetime.now(timezone.utc), ops))
+
+        def insert_many(self, docs, ordered):
+            self.calls.append(("insert", datetime.now(timezone.utc), docs))
+
+    fake = FakeCollection()
+
+    class FakeClient(dict):
+        def __getitem__(self, _db):
+            return {config.COLL_TRENDING: fake, config.COLL_DLQ: fake}
+
+    class LazyBatch:
+        """foreachPartition that, like Spark, only 'computes' when it runs."""
+        def __init__(self, rows, delay):
+            self.rows, self.delay = rows, delay
+
+        def foreachPartition(self, fn):              # noqa: N802
+            time.sleep(self.delay)
+            fn(iter(self.rows))
+
+    key = config.MONGO_URI
+    saved = mongo._CLIENTS.get(key)
+    mongo._CLIENTS[key] = FakeClient()
+    try:
+        rows = [Row(window_start=1, window_end=2, product_id=p, event_count=p)
+                for p in range(2500)]
+        before = datetime.now(timezone.utc)
+        job.mongo_upsert(config.COLL_TRENDING,
+                         ["window_start", "window_end", "product_id"])(
+            LazyBatch(rows, 0.3), 7)
+        job.mongo_append(config.COLL_DLQ)(LazyBatch([Row(raw_value="x")], 0.3), 7)
+    finally:
+        if saved is None:
+            mongo._CLIENTS.pop(key, None)
+        else:
+            mongo._CLIENTS[key] = saved
+
+    bulk = [c for c in fake.calls if c[0] == "bulk"]
+    ops = [op for c in bulk for op in c[2]]
+    check("upsert sink writes every row, in bounded chunks",
+          len(ops) == 2500 and [len(c[2]) for c in bulk] == [1000, 1000, 500],
+          str([len(c[2]) for c in bulk]))
+    stamps = [op._doc["$set"]["_updated_at"] for op in ops]
+    check("upsert rows are stamped at write time, not when the batch started",
+          all((s - before).total_seconds() >= 0.25 for s in stamps))
+    check("upsert is keyed on the natural key",
+          ops[5]._filter == {"window_start": 1, "window_end": 2, "product_id": 5}
+          and ops[5]._upsert is True)
+    inserted = [d for c in fake.calls if c[0] == "insert" for d in c[2]]
+    check("dead-letter rows are stamped at write time too",
+          len(inserted) == 1
+          and (inserted[0]["_updated_at"] - before).total_seconds() >= 0.25)
+
+
+def test_benchmark_helpers():
+    from src.common import bench
+
+    check("percentile uses nearest rank",
+          bench.percentile([5, 1, 3, 2, 4], 50) == 3
+          and bench.percentile([5, 1, 3, 2, 4], 95) == 5
+          and bench.percentile([None, 7], 50) == 7
+          and bench.percentile([], 50) is None)
+    sawtooth = [0, 900, 50, 950, 20, 880, 10, 910, 30]
+    climbing = [100, 900, 400, 1500, 900, 2100, 1600, 2900, 2400]
+    check("a sawtooth backlog is not 'rising'",
+          bench.rising_floor(sawtooth) is False)
+    check("a backlog whose floor climbs is 'rising'",
+          bench.rising_floor(climbing) is True)
+    check("too few batches to judge gives None",
+          bench.rising_floor([1, 2, 3]) is None)
+    steady = [2400, 2646, 2210, 2530, 2300, 2580]
+    check("a steady backlog with noise is not 'rising'",
+          bench.rising_floor(steady) is False)
+    check("kept up: flat backlog, cleared within two triggers",
+          bench.keeping_up(sawtooth, 12, 10) is True)
+    check("not kept up: backlog outlived the load",
+          bench.keeping_up(sawtooth, 90, 10) is False
+          and bench.keeping_up(sawtooth, None, 10) is False)
+    check("not kept up: backlog floor climbing",
+          bench.keeping_up(climbing, 5, 10) is False)
+    check("not kept up: Spark read clearly less than was sent",
+          bench.keeping_up(sawtooth, 8, 10, read_rate=7000, sent_rate=10000) is False
+          and bench.keeping_up(sawtooth, 8, 10, read_rate=9800, sent_rate=10000))
+    check("durations parse",
+          bench.seconds_in("10 seconds") == 10 and bench.seconds_in("2 minutes") == 120
+          and bench.seconds_in("nonsense") == 0)
+    chart = bench.xychart("t", ["1k", "2k"], "events/s", [900, 1900], [850, None])
+    check("chart is a Mermaid xychart with bars and a line",
+          chart.startswith("```mermaid\nxychart-beta")
+          and "bar [900, 1900]" in chart and "line [850, 0]" in chart, chart)
+
+    path = os.path.join(tempfile.mkdtemp(prefix="bench_"), "docs", "B.md")
+    bench.update_section("throughput", "T1", path)
+    bench.update_section("recovery", "R1", path)
+    text = bench.update_section("throughput", "T2", path)
+    check("each script replaces only its own report section",
+          "T2" in text and "T1" not in text and "R1" in text
+          and text.count("<!-- throughput:start -->") == 1
+          and text.startswith("# Benchmarks"), text[-200:])
+    shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
+
+    class FakeEngine(bench.DockerEngine):
+        def inspect(self, name):
+            return {"State": {"Running": True,
+                              "StartedAt": "2026-09-17T14:35:42.903123456Z"}}
+
+    engine = FakeEngine()
+    check("container start time parses Docker's nanosecond timestamps",
+          abs(engine.started_at("x") - 1789655742.903123) < 1e-3
+          and engine.is_running("x"))
+
+
+def test_kafka_clients_use_only_known_settings():
+    """kafka-python 3 rejects unknown settings at runtime (buffer_memory and
+    api_version_auto_timeout_ms both slipped through once). Check every
+    KafkaProducer / KafkaConsumer call in the project against the installed
+    library's own list."""
+    from kafka import KafkaConsumer, KafkaProducer
+    known = {"KafkaProducer": set(KafkaProducer.DEFAULT_CONFIG),
+             "KafkaConsumer": set(KafkaConsumer.DEFAULT_CONFIG)}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bad, calls = [], 0
+    for folder in ("src", "scripts"):
+        for dirpath, _, files in os.walk(os.path.join(root, folder)):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, name)
+                tree = ast.parse(open(path, encoding="utf-8").read())
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call) and \
+                            getattr(node.func, "id", None) in known:
+                        calls += 1
+                        for kw in node.keywords:
+                            if kw.arg and kw.arg not in known[node.func.id]:
+                                bad.append(f"{name}: {node.func.id}({kw.arg}=)")
+    check(f"all {calls} Kafka client constructions use known settings",
+          calls >= 6 and not bad, str(bad))
+
+
+def test_benchmark_tools_are_wired():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    compose = open(os.path.join(root, "docker-compose.yml"), encoding="utf-8").read()
+
+    def block(name):
+        return compose.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0]
+
+    load, recovery = block("loadtest"), block("recovery")
+    check("benchmark tools only run on request (tools profile)",
+          'profiles: ["tools"]' in load and 'profiles: ["tools"]' in recovery)
+    check("benchmark tools take options (entrypoint, not command)",
+          "entrypoint:" in load and "entrypoint:" in recovery
+          and "command:" not in load and "command:" not in recovery)
+    check("only the recovery tool gets the Docker socket",
+          "docker.sock" in recovery and compose.count("docker.sock:") == 1)
+    check("benchmark tools run the current code without a rebuild",
+          all("./src:/app/src:ro" in b and "./scripts:/app/scripts:ro" in b
+              for b in (load, recovery)))
+    check("benchmark results land in the project folder",
+          "./docs:/app/docs" in load and "./results:/app/results" in load
+          and "./docs:/app/docs" in recovery)
+    for script in ("load_test.py", "recovery_test.py"):
+        src = open(os.path.join(root, "scripts", script), encoding="utf-8").read()
+        check(f"{script} cleans up its test rows", "def cleanup" in src
+              and src.count("cleanup()") >= 2)
+    alerts = open(os.path.join(root, "monitoring", "alerts.yml"),
+                  encoding="utf-8").read()
+    check("the lag alert looks for a rising floor, not a noisy slope",
+          "min_over_time(affinity_kafka_lag_offsets[5m])" in alerts
+          and "deriv(affinity_kafka_lag_offsets" not in alerts)
+
+
 def test_state_store_is_available(spark):
     from src.streaming import job
     name = job.state_store_provider()
@@ -934,6 +1168,7 @@ def main():
     test_no_misleading_unique_user_counts()
     test_dashboard_reads_only_fields_the_api_returns()
     test_partition_writers_can_be_shipped_to_workers()
+    test_sinks_stamp_rows_when_they_are_written()
     test_undefined_lift_ranks_below_defined_lift()
     test_env_file_is_loaded()
     test_kafka_serializers()
@@ -943,6 +1178,10 @@ def main():
     test_session_products_follow_the_rules()
     test_compose_runs_the_whole_stack()
     test_progress_listener_records_spark_progress()
+    test_kafka_lag_arithmetic()
+    test_benchmark_helpers()
+    test_benchmark_tools_are_wired()
+    test_kafka_clients_use_only_known_settings()
     spark = spark_session()
     spark.sparkContext.setLogLevel("ERROR")
     try:

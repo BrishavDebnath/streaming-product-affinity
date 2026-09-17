@@ -477,7 +477,8 @@ def metrics():
             "Duration of the latest micro-batch, per Spark query.",
             lambda d: d.get("batch_duration_ms"))
     _series("affinity_kafka_lag_offsets",
-            "Offsets behind the latest Kafka offset, per Spark query.",
+            "Events not yet read, measured after each batch against the "
+            "broker's latest offsets, per Spark query.",
             lambda d: max(_known(d.get("kafka_lag")), default=None))
     _series("affinity_state_rows",
             "Rows held in streaming state, per Spark query.",

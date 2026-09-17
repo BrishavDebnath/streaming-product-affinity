@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 116 checks against a real SparkSession, plus CI |
+| No tests | 150 checks against a real SparkSession, plus CI |
 
 
 ---
@@ -486,3 +486,87 @@ log opened with ~40 Spark INFO start-up lines. **Changed:** the `py4j` logger
 is set to WARNING in `job.py`, and the test session sets `spark.log.level` so
 start-up is quiet. The same 1 h 38 min had no Spark errors and three one-off
 start-up warnings.
+
+---
+
+# Tenth pass - measurement
+
+### 54. Kafka lag was always 0
+The listener recorded Spark's `maxOffsetsBehindLatest`, which compares a
+batch's end offsets with the latest offsets Spark saw when it planned that
+batch. Without `maxOffsetsPerTrigger` a batch reads everything it saw, so
+the figure is 0 by construction: it read exactly 0.0 for hours, the Grafana
+panel was flat, and the `KafkaLagGrowing` alert could never fire.
+**Changed:** after each batch the job asks the broker for its latest offsets
+(`kafka_io.latest_offsets`) and subtracts what the batch read; Spark's figure
+is only a fallback. The alert now looks for a rising floor, because the lag
+is a sawtooth and its slope is noise. Each batch also records how many rows
+it read.
+
+### 55. Write timestamps were taken before the batch was computed
+`_updated_at` was set when `foreachBatch` started. Spark computes the batch
+lazily after that, so freshness, processing delay and any latency measured
+from it read too low by up to a batch duration. **Changed:** rows are stamped
+when each chunk is written. A test runs a sink against a batch that takes
+0.3 s to "compute" and checks the stamps come after it.
+
+### 56. The load test measured the wrong things
+Two-event sessions of fixed products from one process; "lag" taken from the
+window-close delay; hardware left for the reader to fill in; no latency.
+**Changed:** rewritten (`scripts/load_test.py`, `docker compose run --rm
+loadtest`) - realistic sessions from several processes, Spark's per-batch
+records, real lag, a stated "kept up" rule, probe latency, machine details
+detected, and a report section in `docs/BENCHMARKS.md`. See ADR 0010.
+
+### 57. Fault tolerance was only a manual runbook step
+**Changed:** `scripts/recovery_test.py` (`docker compose run --rm recovery`)
+kills Spark with SIGKILL under load, restarts it, measures time to the first
+result and to a cleared backlog, and checks per product that every event
+Kafka acknowledged was counted exactly once. Checked against a real Docker
+engine: a container killed this way is not restarted by its restart policy,
+so the outage lasts as long as the test says.
+
+### 58. Kafka kept every event for 7 days
+The broker default. A load test writes millions of events, all kept on disk
+in the `kafka_data` volume for a week. **Changed:** `kafka-init` sets
+`retention.ms` (24 hours, `KAFKA_RETENTION_MS`) on every start, so existing
+topics get it too.
+
+### 59. The first lag fix (item 54) never ran
+Found on the live stack: lag still read exactly 0.0. The lag reader passed
+`api_version_auto_timeout_ms`, which kafka-python 3 renamed to
+`bootstrap_timeout_ms`, so building the client failed on every batch and the
+listener quietly fell back to Spark's always-0 figure. **Changed:** the
+settings live in `kafka_io.LAG_CONSUMER_CONFIG`, and a test checks every key
+against `KafkaConsumer.DEFAULT_CONFIG`. Without the broker, lag is now
+recorded as unknown rather than 0 (Spark's figure is used only when
+`MAX_OFFSETS_PER_TRIGGER` caps batches), and a failed attempt is not retried
+for 30 s, because each one blocks for about 5 s.
+
+### 60. The load test crashed on start; the recovery test never saw "caught up"
+Both found on the first real run. The load test passed `buffer_memory` to
+`KafkaProducer`, a Java-client setting kafka-python 3 does not have. The
+recovery test treated "caught up" as fewer than 500 unread events, but its
+own traffic keeps flowing at 500 events/s, so a healthy query still has
+(rate x batch time) events unread after every batch; it waited out its full
+timeout and reported the catch-up time as unknown (the exactly-once checks
+still passed). **Changed:** the setting is gone, and a test now parses every
+`KafkaProducer`/`KafkaConsumer` call in the project and checks each keyword
+against the installed library's `DEFAULT_CONFIG`. Caught up now means less
+than one trigger interval's worth of traffic is waiting.
+
+### 61. The first full load test called 1,000 events/s "not kept up"
+It kept up at 2,500 to 10,000 events/s but not at 1,000, which made no
+sense: that step cleared its backlog in 8 s and Spark read 1,020 events/s.
+The "rising" check compared the first third of the step with the last, and
+the first third still held the idle backlog from before the load started, so
+the normal climb to a steady level looked like falling behind. **Changed:**
+the first three batches of each step are ignored; the check compares halves
+of what remains; and a step also fails if Spark read under 90% of what was
+sent. Replayed on the shape of that run, the old rule says rising and the new
+one does not. The same run showed 10,000 events/s was not the ceiling
+(largest batch 9.5 s of a 10 s trigger), so the default steps now go to
+20,000 events/s with six producer processes. Also: the tool containers mount
+the code instead of needing `run --build`, which had rebuilt and restarted
+the API before every test, and the load generator no longer prints an
+idempotence warning per process.

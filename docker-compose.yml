@@ -75,11 +75,16 @@ services:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-c"]
+    # Retention is applied on every start, so an existing topic gets it too.
+    # Kafka's default is 7 days; a load test writes millions of events.
     command:
       - >-
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
         --create --if-not-exists --topic clickstream
         --partitions ${KAFKA_PARTITIONS:-6} --replication-factor 1
+        && /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka:29092
+        --alter --entity-type topics --entity-name clickstream
+        --add-config retention.ms=${KAFKA_RETENTION_MS:-86400000}
         && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
         --describe --topic clickstream
     restart: "no"
@@ -200,6 +205,47 @@ services:
     container_name: affinity-smoke
     profiles: ["tools"]
     command: ["python", "scripts/smoke_test.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Benchmarks (docs/BENCHMARKS.md). An entrypoint rather than a command, so
+  # options can be added: docker compose run --rm loadtest --rates 1000 5000
+  # The code is mounted read-only, so edits take effect without a rebuild -
+  # and without `run --build`, which also rebuilt and restarted the API.
+  # Both run as root only to write into the bind-mounted docs/ and results/
+  # folders on Linux hosts; nothing else in the image changes.
+  loadtest:
+    <<: *app
+    container_name: affinity-loadtest
+    profiles: ["tools"]
+    user: root
+    entrypoint: ["python", "scripts/load_test.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./docs:/app/docs
+      - ./results:/app/results
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Kills and restarts the Spark container, so it needs the Docker socket.
+  # Only this tool gets it, and only when run by hand.
+  recovery:
+    <<: *app
+    container_name: affinity-recovery
+    profiles: ["tools"]
+    user: root
+    entrypoint: ["python", "scripts/recovery_test.py"]
+    environment:
+      <<: *app-env
+      SPARK_CONTAINER: affinity-spark
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./docs:/app/docs
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       api:
         condition: service_healthy
