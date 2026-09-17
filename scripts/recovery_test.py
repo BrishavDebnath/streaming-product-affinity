@@ -297,7 +297,7 @@ def main():
     minutes = sorted({doc["window_start"] for doc in db()[config.COLL_TRENDING]
                       .find({"product_id": {"$in": TEST_PRODUCTS}},
                             {"window_start": 1})})
-    gaps = sum(1 for a, b in zip(minutes, minutes[1:])
+    gaps = sum(1 for a, b in zip(minutes, minutes[1:], strict=False)
                if (b - a).total_seconds() > 60)
     removed = cleanup()
     sender.producer.close()

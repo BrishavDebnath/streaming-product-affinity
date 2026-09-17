@@ -14,7 +14,6 @@ Endpoints
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException, Query
 from pymongo import DESCENDING, MongoClient
@@ -33,10 +32,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-_client = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=3000)
+_client: MongoClient = MongoClient(config.MONGO_URI, serverSelectionTimeoutMS=3000)
 _db = _client[config.MONGO_DB]
 
-_CACHE: Dict[str, tuple] = {}
+_CACHE: dict[str, tuple] = {}
 
 
 def _cached(key: str, builder):
@@ -56,7 +55,7 @@ def _cached(key: str, builder):
     return value
 
 
-_COUNTERS: Dict[str, int] = {
+_COUNTERS: dict[str, int] = {
     "cache_hits": 0,
     "cache_misses": 0,
     "requests_total": 0,
@@ -66,7 +65,7 @@ _COUNTERS: Dict[str, int] = {
 }
 
 
-def _latest_window() -> Dict:
+def _latest_window() -> dict:
     """The most recent completed trending window, or {} if none yet."""
     doc = _db[config.COLL_TRENDING].find_one(sort=[("window_start", DESCENDING)])
     return doc or {}
@@ -116,7 +115,7 @@ def trending(limit: int = Query(default=config.DEFAULT_LIMIT, ge=1, le=100),
 
 def _trending_uncached(limit, minutes, latest):
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    pipeline = [
+    pipeline: list[dict] = [
         {"$match": {"window_start": {"$gte": cutoff}}},
         {"$group": {"_id": "$product_id",
                     "event_count": {"$sum": "$event_count"},
@@ -174,7 +173,7 @@ def related_products(product_id: int,
 
     cutoff = datetime.now(timezone.utc) - timedelta(
         minutes=config.PAIR_LOOKBACK_MINUTES)
-    pipeline = [
+    pipeline: list[dict] = [
         {"$match": {"product_id": product_id, "window_start": {"$gte": cutoff}}},
         {"$group": {"_id": "$related_product_id",
                     "affinity": {"$sum": "$affinity"},
@@ -221,7 +220,7 @@ def related_products(product_id: int,
     # Cold start: no pairs seen for this product yet.
     _COUNTERS["related_fallback"] += 1
     latest = _latest_window()
-    fallback: List[Dict] = []
+    fallback: list[dict] = []
     if latest:
         fallback = list(_db[config.COLL_TRENDING].find(
             {"window_start": latest["window_start"],
@@ -243,7 +242,7 @@ def _product_counts(cutoff):
     window, read from the trending collection. These are the marginals that
     lift needs to divide popularity out of a raw co-occurrence count.
     """
-    pipeline = [
+    pipeline: list[dict] = [
         {"$match": {"window_start": {"$gte": cutoff}}},
         {"$group": {"_id": "$product_id", "events": {"$sum": "$event_count"}}},
     ]
@@ -263,7 +262,7 @@ def throughput(windows: int = Query(default=20, ge=1, le=200)):
     counter in the producer.
     """
     _COUNTERS["requests_total"] += 1
-    pipeline = [
+    pipeline: list[dict] = [
         {"$group": {"_id": {"start": "$window_start", "end": "$window_end"},
                     "events": {"$sum": "$event_count"},
                     "score": {"$sum": "$score"},
@@ -363,7 +362,7 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
     undirected renderer draws each relationship once instead of twice.
     """
     _COUNTERS["requests_total"] += 1
-    pipeline = [
+    pipeline: list[dict] = [
         {"$match": {"$expr": {"$lt": ["$product_id", "$related_product_id"]}}},
         {"$group": {"_id": {"a": "$product_id", "b": "$related_product_id"},
                     "affinity": {"$sum": "$affinity"},
@@ -379,7 +378,8 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
         _COUNTERS["errors_total"] += 1
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    edges, node_ids = [], set()
+    edges: list[dict] = []
+    node_ids: set[int] = set()
     for row in rows:
         a, b = row["_id"]["a"], row["_id"]["b"]
         node_ids.update((a, b))

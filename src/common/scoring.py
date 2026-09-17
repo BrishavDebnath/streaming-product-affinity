@@ -26,11 +26,11 @@ showing, and count-ranking buries it.
 """
 
 import math
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 
 def lift(pair_count: float, count_a: float, count_b: float,
-         total: float) -> Optional[float]:
+         total: float) -> float | None:
     """
     Lift for one pair. Returns None when it is undefined — either product
     unseen, or an empty corpus. Callers must handle None rather than
@@ -48,7 +48,7 @@ def lift(pair_count: float, count_a: float, count_b: float,
 
 
 def pmi(pair_count: float, count_a: float, count_b: float,
-        total: float) -> Optional[float]:
+        total: float) -> float | None:
     """
     Pointwise mutual information — log of lift. Same ranking as lift, but a
     symmetric scale around 0 that is easier to threshold and to average.
@@ -59,11 +59,11 @@ def pmi(pair_count: float, count_a: float, count_b: float,
     return math.log2(value)
 
 
-def score_pairs(pairs: Iterable[Dict],
-                product_counts: Dict[int, float],
+def score_pairs(pairs: Iterable[dict],
+                product_counts: dict[int, float],
                 total: float,
                 anchor_id: int,
-                method: str = "affinity") -> List[Dict]:
+                method: str = "affinity") -> list[dict]:
     """
     Attach a ranking score to each candidate pair and sort best-first.
 

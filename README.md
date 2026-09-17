@@ -1,5 +1,7 @@
 # Streaming Product Affinity Pipeline
 
+[![CI](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/ci.yml/badge.svg)](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/ci.yml)
+
 *A streaming data-engineering project: Kafka 4 -> Spark 4 Structured Streaming
 -> MongoDB -> FastAPI. It finds products that shoppers view together in the
 same session, using co-occurrence statistics - no machine learning yet. See
@@ -73,7 +75,7 @@ save them in docs/screenshots/, then remove this comment wrapper.
 |---|---|
 | **Docker Desktop** (or Docker Engine with Compose v2.24+) | runs everything |
 | **Git** | to clone the repository |
-| **Python 3.11 or 3.12** *(optional)* | only to run scripts or tests directly on your machine |
+| **Python 3.11 or 3.12** *(optional)* | only to run scripts or the full test suite directly on your machine |
 
 Give Docker at least **8 GB of memory** (Docker Desktop on Windows uses half
 your RAM by default). The Spark driver is set to 4 GB and MongoDB's cache to
@@ -300,9 +302,22 @@ the measurements are taken this way.
 
 ## Tested
 
-The suite runs **150 checks** against a real local `SparkSession`. It needs
-no Kafka and no Mongo; run it inside the Spark container with the unit-test
-command above.
+**73 tests, no Kafka and no MongoDB needed**, in three groups:
+
+| What | How | Where it runs |
+|---|---|---|
+| Spark transforms and the streaming plan | a real local `SparkSession` | `pytest`, and `docker compose run --rm --no-deps spark ...` |
+| The API | the real FastAPI app over an in-memory MongoDB (mongomock) | `pytest tests/test_api.py` |
+| The dashboard | Streamlit's `AppTest` runs the real page against the real API | `pytest tests/test_dashboard.py` |
+
+The Spark group is also a script: `spark-submit tests/test_transforms.py`
+runs it inside the Spark container with no pytest installed, reporting its
+**155 individual checks**. `pytest` turns any failed check into a failed test,
+so both routes agree. The Spark group starts a JVM and one Python process per
+core, so give it a couple of free gigabytes - on a laptop already running the
+stack, prefer the container route.
+
+What the tests cover:
 
 - parsing, type coercion, weighting, and rejection reasons
 - garbage payloads route to the DLQ rather than crashing the job
@@ -329,7 +344,15 @@ The transforms are pure `DataFrame -> DataFrame` functions in
 `src/streaming/transforms.py` precisely so this is possible. Streaming logic
 that can only be verified by watching a dashboard cannot be refactored safely.
 
-CI runs the same suite on every push (`.github/workflows/ci.yml`).
+**On every push** (`.github/workflows/ci.yml`) GitHub Actions runs `ruff` and
+`mypy`, then the whole test suite on Python 3.11 and 3.12 with a coverage
+summary, and then the real thing: `docker compose up` for the entire stack,
+followed by the end-to-end check against it.
+
+```bash
+pytest                      # everything, with coverage: make test-all
+ruff check . && mypy        # the same lint and type checks CI runs: make lint
+```
 
 ---
 
@@ -404,7 +427,10 @@ scripts/load_test.py       throughput and latency benchmark
 scripts/recovery_test.py   crash-and-restart test
 src/common/bench.py        shared benchmark helpers (standard library only)
 monitoring/                Prometheus config, alert rules, Grafana dashboard
-tests/test_transforms.py   the test suite
+tests/test_transforms.py   Spark transform and streaming tests
+tests/test_api.py          API tests over an in-memory MongoDB
+tests/test_dashboard.py    the Streamlit page, run headless
+pyproject.toml             pytest, coverage, ruff and mypy settings
 ```
 
 Configuration is entirely environment-driven: the same code runs in the

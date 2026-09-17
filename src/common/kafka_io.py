@@ -7,6 +7,7 @@ DeprecationWarning for each producer it builds - which PowerShell shows as a
 red error. These classes implement kafka.serializer.Serializer instead.
 """
 
+import contextlib
 import json
 import logging
 import threading
@@ -86,10 +87,8 @@ def latest_offsets(topic, bootstrap_servers):
                         "%ss): %s", LAG_RETRY_SECONDS, exc)
             _LAG_RETRY_AT = time.time() + LAG_RETRY_SECONDS
             if _LAG_CONSUMER is not None:
-                try:
+                with contextlib.suppress(Exception):
                     _LAG_CONSUMER.close()
-                except Exception:                         # noqa: BLE001
-                    pass
             _LAG_CONSUMER = None
             return None
 

@@ -15,3 +15,11 @@ derby.log
 .pytest_cache/
 results/
 test-logs/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+
+# JVM crash dumps
+hs_err_pid*.log
+replay_pid*.log

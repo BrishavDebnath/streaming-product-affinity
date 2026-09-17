@@ -270,6 +270,7 @@ NOISY_LOGGERS = ("org.apache.spark.sql.catalyst.analysis.StreamingJoinHelper",)
 def quiet_known_noise(spark: SparkSession) -> None:
     try:
         jvm = spark.sparkContext._jvm
+        assert jvm is not None                # only None before the JVM starts
         level = jvm.org.apache.logging.log4j.Level.ERROR
         for name in NOISY_LOGGERS:
             jvm.org.apache.logging.log4j.core.config.Configurator.setLevel(name, level)

@@ -37,7 +37,7 @@ POLL_SECONDS = 10
 HEARTBEAT_USER = catalog.USERS[-1]
 HEARTBEAT_PRODUCT = 9011
 
-FAILURES = []
+FAILURES: list = []
 
 
 def check(name, ok, detail=""):

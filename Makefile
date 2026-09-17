@@ -1,12 +1,14 @@
 # Shortcuts for macOS / Linux. On Windows, run the docker compose commands
 # shown in README.md directly - they do the same thing.
-.PHONY: help up down clean ps logs test smoke loadtest recovery seed
+.PHONY: help up down clean ps logs test test-all lint smoke loadtest recovery seed
 
 help:
 	@echo "make up         - build and start the whole stack"
 	@echo "make ps         - show container status"
 	@echo "make logs       - follow the Spark job's log"
-	@echo "make test       - run the unit tests inside the Spark image"
+	@echo "make test       - run the Spark tests inside the Spark image"
+	@echo "make test-all   - run every test here (needs requirements-test.txt)"
+	@echo "make lint       - ruff and mypy"
 	@echo "make smoke      - end-to-end check against the running stack"
 	@echo "make loadtest   - throughput and latency benchmark (~25 min)"
 	@echo "make recovery   - kill and restart Spark, check nothing was lost"
@@ -32,6 +34,14 @@ logs:
 test:
 	docker compose run --rm --no-deps spark \
 		/opt/spark/bin/spark-submit /app/tests/test_transforms.py
+
+# Everything, including the API and dashboard tests, on your own machine.
+test-all:
+	pytest --cov --cov-report=term-missing
+
+lint:
+	ruff check .
+	mypy
 
 smoke:
 	docker compose run --rm smoke

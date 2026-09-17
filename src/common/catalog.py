@@ -13,9 +13,9 @@ than uniform noise.
 """
 
 import random
-from typing import Dict, List, Optional
+from typing import Any
 
-PRODUCTS: List[Dict] = [
+PRODUCTS: list[dict] = [
     {"id": 9001, "name": "Apple MacBook Air M3", "price": 114900, "category": "laptop"},
     {"id": 9002, "name": "Dell XPS 13",          "price": 99990,  "category": "laptop"},
     {"id": 9003, "name": "Laptop Sleeve 13\"",   "price": 1499,   "category": "laptop-acc"},
@@ -30,14 +30,14 @@ PRODUCTS: List[Dict] = [
     {"id": 9012, "name": "Puma Velocity Nitro",  "price": 8999,   "category": "footwear"},
 ]
 
-USERS: List[int] = list(range(1001, 1051))       # 50 simulated shoppers
+USERS: list[int] = list(range(1001, 1051))       # 50 simulated shoppers
 
 _BY_ID = {p["id"]: p for p in PRODUCTS}
 
 # Categories a shopper plausibly browses in the same session. This is what
 # makes the pipeline's output checkable: if it works, laptops should
 # surface laptop accessories, not footwear.
-AFFINITY: Dict[str, List[str]] = {
+AFFINITY: dict[str, list[str]] = {
     "laptop": ["laptop", "laptop-acc"],
     "laptop-acc": ["laptop-acc", "laptop"],
     "phone": ["phone", "phone-acc", "audio"],
@@ -52,11 +52,11 @@ def categories_related(a: str, b: str) -> bool:
     return b in AFFINITY.get(a, []) or a in AFFINITY.get(b, [])
 
 
-def product_ids() -> List[int]:
+def product_ids() -> list[int]:
     return [p["id"] for p in PRODUCTS]
 
 
-def get(product_id: int) -> Optional[Dict]:
+def get(product_id: int) -> dict | None:
     return _BY_ID.get(product_id)
 
 
@@ -65,13 +65,13 @@ def name_of(product_id: int) -> str:
     return product["name"] if product else f"Unknown product {product_id}"
 
 
-def in_categories(categories: List[str]) -> List[Dict]:
+def in_categories(categories: list[str]) -> list[dict]:
     wanted = set(categories)
     return [p for p in PRODUCTS if p["category"] in wanted]
 
 
 def session_products(n: int, cross_category_rate: float,
-                     rng: random.Random = random) -> List[Dict]:
+                     rng: Any = random) -> list[dict]:
     """
     The products one shopper views in a single visit, in viewing order.
 
@@ -95,7 +95,7 @@ def session_products(n: int, cross_category_rate: float,
     return chosen
 
 
-def enrich(rows: List[Dict], id_field: str = "product_id") -> List[Dict]:
+def enrich(rows: list[dict], id_field: str = "product_id") -> list[dict]:
     """Attach name/price/category to API rows so the UI needs no lookup table."""
     out = []
     for row in rows:

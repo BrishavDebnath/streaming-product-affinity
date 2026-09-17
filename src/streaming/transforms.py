@@ -9,8 +9,10 @@ Streaming logic that is only ever verified by watching a dashboard is
 streaming logic nobody can refactor safely.
 """
 
-from pyspark.sql import Column, DataFrame, functions as F
-from pyspark.sql.types import (DoubleType, IntegerType, StringType, StructType)
+
+from pyspark.sql import Column, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import DoubleType, IntegerType, StringType, StructType
 
 from src.common import config
 
@@ -128,13 +130,13 @@ def invalid_events(parsed: DataFrame) -> DataFrame:
         F.current_timestamp().alias("rejected_at"))
 
 
-def with_watermark(events: DataFrame, delay: str = None) -> DataFrame:
+def with_watermark(events: DataFrame, delay: str | None = None) -> DataFrame:
     return events.withWatermark("event_time", delay or config.WATERMARK)
 
 
 def trending(events: DataFrame,
-             window_duration: str = None,
-             slide: str = None) -> DataFrame:
+             window_duration: str | None = None,
+             slide: str | None = None) -> DataFrame:
     """
     Event counts per product per time window.
 
@@ -164,8 +166,8 @@ def trending(events: DataFrame,
 
 
 def co_occurrence(events: DataFrame,
-                  gap: str = None,
-                  window_duration: str = None) -> DataFrame:
+                  gap: str | None = None,
+                  window_duration: str | None = None) -> DataFrame:
     """
     "Users who interacted with A also interacted with B."
 
