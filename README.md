@@ -302,7 +302,7 @@ the measurements are taken this way.
 
 ## Tested
 
-**73 tests, no Kafka and no MongoDB needed**, in three groups:
+**74 tests, no Kafka and no MongoDB needed**, in three groups:
 
 | What | How | Where it runs |
 |---|---|---|
@@ -312,7 +312,7 @@ the measurements are taken this way.
 
 The Spark group is also a script: `spark-submit tests/test_transforms.py`
 runs it inside the Spark container with no pytest installed, reporting its
-**155 individual checks**. `pytest` turns any failed check into a failed test,
+**161 individual checks**. `pytest` turns any failed check into a failed test,
 so both routes agree. The Spark group starts a JVM and one Python process per
 core, so give it a couple of free gigabytes - on a laptop already running the
 stack, prefer the container route.

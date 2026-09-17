@@ -1063,6 +1063,20 @@ def test_test_dependencies_are_declared():
           "pyspark>=4.1.3,<4.2" in declared, declared)
 
 
+def test_type_checking_survives_third_party_stubs():
+    """mypy is pinned to Python 3.10, the version the Spark image runs. A
+    dependency whose stubs use newer syntax then aborts the whole run before
+    this project is checked at all - numpy 2.5 did exactly that in CI."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = open(os.path.join(root, "pyproject.toml"), encoding="utf-8").read()
+    check("mypy checks against the container's Python version",
+          'python_version = "3.10"' in cfg)
+    check("numpy's 3.12-syntax stubs are not parsed",
+          'module = ["numpy", "numpy.*"]' in cfg
+          and 'follow_imports = "skip"' in cfg
+          and "follow_imports_for_stubs = true" in cfg)
+
+
 def test_kafka_clients_use_only_known_settings():
     """kafka-python 3 rejects unknown settings at runtime (buffer_memory and
     api_version_auto_timeout_ms both slipped through once). Check every
@@ -1224,6 +1238,7 @@ def main():
     test_benchmark_helpers()
     test_benchmark_tools_are_wired()
     test_kafka_clients_use_only_known_settings()
+    test_type_checking_survives_third_party_stubs()
     test_test_dependencies_are_declared()
     spark = spark_session()
     spark.sparkContext.setLogLevel("ERROR")
