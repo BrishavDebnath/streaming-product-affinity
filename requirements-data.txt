@@ -1,0 +1,7 @@
+# Only needed to fetch and replay the real dataset (Phase 5).
+#
+#     pip install -r requirements-data.txt
+#
+# The pipeline itself does not depend on any of this.
+
+kaggle>=1.6

@@ -1,6 +1,7 @@
 # Shortcuts for macOS / Linux. On Windows, run the docker compose commands
 # shown in README.md directly - they do the same thing.
-.PHONY: help up down clean ps logs test test-all lint smoke loadtest recovery seed
+.PHONY: help up down clean ps logs test test-all lint smoke loadtest recovery seed \
+        dataset replay evaluate
 
 help:
 	@echo "make up         - build and start the whole stack"
@@ -13,6 +14,9 @@ help:
 	@echo "make loadtest   - throughput and latency benchmark (~25 min)"
 	@echo "make recovery   - kill and restart Spark, check nothing was lost"
 	@echo "make seed       - backfill 20 more minutes of history"
+	@echo "make dataset    - download the RetailRocket dataset (needs a Kaggle token)"
+	@echo "make replay     - replay a week of real traffic through Kafka (~5 min)"
+	@echo "make evaluate   - hit-rate@10 against the bestseller baseline"
 	@echo "make down       - stop everything, keep the data"
 	@echo "make clean      - stop everything and delete all data"
 
@@ -54,6 +58,18 @@ recovery:
 
 seed:
 	docker compose run --rm --no-deps seed python scripts/seed.py --minutes 20 --sessions 400
+
+# Real data (docs/adr/0011). The download runs on the host, because it needs
+# your Kaggle token; the replay and the evaluation run in the stack.
+dataset:
+	pip install -r requirements-data.txt
+	python scripts/fetch_dataset.py
+
+replay:
+	docker compose run --rm replay --days 7
+
+evaluate:
+	docker compose run --rm evaluate --train-days 7 --test-days 7
 
 down:
 	docker compose down

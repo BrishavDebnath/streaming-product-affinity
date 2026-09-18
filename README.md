@@ -1,6 +1,11 @@
 # Streaming Product Affinity Pipeline
 
 [![CI](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/ci.yml/badge.svg)](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/codeql.yml/badge.svg)](https://github.com/BrishavDebnath/streaming-product-affinity/actions/workflows/codeql.yml)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://github.com/BrishavDebnath/streaming-product-affinity/blob/main/.github/workflows/ci.yml)
+[![Kafka 4.3](https://img.shields.io/badge/kafka-4.3-231f20)](https://kafka.apache.org/)
+[![Spark 4.1](https://img.shields.io/badge/spark-4.1-e25a1c)](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
 *A streaming data-engineering project: Kafka 4 -> Spark 4 Structured Streaming
 -> MongoDB -> FastAPI. It finds products that shoppers view together in the
@@ -50,9 +55,11 @@ What it does **not** do, and does not claim to:
   model, so nothing here is called a recommendation.
 - **No machine learning.** Lift is a statistic, not a trained model. ML is
   planned - see [Roadmap](#roadmap).
-- **No offline evaluation.** The events are synthetic, so precision@k against
-  the generator's own affinity table would measure nothing. Real evaluation
-  needs real clickstream data.
+- **Evaluation needs the real dataset.** On the generated traffic there is
+  nothing honest to measure - the ground truth would be the generator's own
+  affinity table. Hit-rate@10 is measured on real RetailRocket clickstream
+  instead, which is a download away: see
+  [Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
 
 The engineering is where the work is: bounded streaming state, idempotent
 writes, dead-letter handling, schema-version coexistence, and a tested
@@ -207,8 +214,9 @@ appeared in the same session, so the clusters on the dashboard are the
 pipeline **rediscovering** a rule that was put into the data - a known-answer
 test of the pipeline, not a finding about shoppers. With 15% wandering,
 simulated related pairs score a lift of about 6-14 and chance pairs about
-0.7-3.5, which is exactly the separation lift is meant to provide. Real
-clickstream data is on the [Roadmap](#roadmap).
+0.7-3.5, which is exactly the separation lift is meant to provide. For real
+clickstream instead of a rediscovered rule, see
+[Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
 
 Uniform random events would make every pair equally likely and leave nothing
 to find; `docker compose run --rm smoke` checks that laptops really do pair
@@ -238,10 +246,13 @@ streaming query.
 
 ## Correctness properties
 
-**Idempotent writes.** Every sink upserts on a natural key
-(`window_start, window_end, product_id`), so replaying a batch after a failure
+**Idempotent writes.** Both aggregate sinks upsert on a natural key —
+`(window_start, window_end, product_id)` for trending, and the same plus
+`related_product_id` for pairs — so replaying a batch after a failure
 converges rather than duplicating. Unique indexes enforce this at the database
-level too.
+level too. The dead-letter sink appends instead: a rejected payload is
+evidence of one delivery, and two deliveries of the same broken event are two
+facts worth keeping.
 
 **Nothing is silently dropped.** Events failing validation are routed to a
 dead-letter collection with the reason and the original payload, instead of
@@ -257,6 +268,73 @@ re-run, and the upserts make the re-run harmless.
 **Cold start is answered explicitly.** A product with no co-occurrence data
 yet returns trending products, and the response says
 `"source": "trending_fallback"` rather than pretending the two are the same.
+
+---
+
+## Real traffic, and whether the recommendations are any good
+
+The demo generator proves the pipeline works; it cannot prove the
+recommendations are useful, because the structure it finds is the structure
+that was put there. So the same pipeline also runs on
+[RetailRocket](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset):
+2.7M real events (views, add-to-carts, transactions) from a real shop over four
+and a half months.
+
+```bash
+pip install -r requirements-data.txt
+python scripts/fetch_dataset.py          # needs a Kaggle legacy API key
+docker compose run --rm replay --days 7  # a week of real traffic, in ~5 minutes
+docker compose run --rm evaluate --train-days 7 --test-days 7
+```
+
+Three things have to happen for real data to work here, and each one is a
+decision rather than a detail ([ADR 0011](docs/adr/0011-real-data-and-evaluation.md)):
+
+- **Visits, not visitors.** RetailRocket has no session id. Events are cut into
+  visits at 30 minutes of inactivity, so two products a shopper saw three weeks
+  apart are never treated as viewed together.
+- **The replay's own clock.** The events are from 2015; replayed as-is, every
+  window would land outside the API's lookback and the dashboard would look
+  broken. Timestamps are mapped onto the replay's clock, keeping order and
+  relative spacing, compressed by a fixed factor (~2000x for a week in five
+  minutes). The replay prints the factor and warns if visits become shorter
+  than the co-view gap.
+- **Real labels.** RetailRocket hashes its item properties, so there are no
+  product names. The catalogue built for a replay says `Item 214536500`,
+  `cat-1037`. Inventing names would make the screenshots prettier and the
+  project dishonest.
+- **Closing the last windows.** A watermark moves on event time, and during a
+  replay nothing else produces any. So the replay ends by sending a few events
+  timestamped past the end of the slice - one reserved product id, one session
+  each, so they can form no pair - and deletes their own rows afterwards.
+  Without them the last two minutes of a five-minute replay would never be
+  counted.
+
+**How it is scored.** Train on the replayed days; test on the days after, which
+the pipeline has never seen. For each held-out visit, the model gets the first
+product and returns ten; a hit is when the product the shopper actually viewed
+**next** is among them. The baseline answers every query with the ten
+most-viewed products of the training period — what a shop does with no
+recommender at all. Both get identical test cases, and the pipeline's answers
+come from the live `/related-products` endpoint, not a re-implementation.
+
+**Measured**, on 3,000 held-out visits: one week of RetailRocket traffic
+(144,671 events) replayed through Kafka, tested on the following week.
+
+| | hit-rate@10 | Coverage | vs baseline |
+|---|---:|---:|---:|
+| **Pipeline**, as the API serves it | **9.13%** | 73% | **12.5x** |
+| Pipeline, co-occurrence only (no fallback) | 7.90% | 33% | 10.8x |
+| Bestsellers (top 10 of the training week) | 0.73% | 100% | — |
+
+Coverage — the share of queries that got a real co-occurrence answer rather
+than the trending fallback — is reported next to the hit-rate, because an
+average that hides it is not an honest number. The figure is conservative:
+796 of the 3,000 query products had never appeared in the training week, and
+every one counts as a miss for the pipeline while the bestseller list still
+answers. Details, and what the number does not claim, in
+[docs/EVALUATION.md](docs/EVALUATION.md); the raw run is in
+`results/evaluation.json` (written locally; `results/` is git-ignored).
 
 ---
 
@@ -302,17 +380,18 @@ the measurements are taken this way.
 
 ## Tested
 
-**74 tests, no Kafka and no MongoDB needed**, in three groups:
+**114 tests, no Kafka and no MongoDB needed**, in four groups:
 
 | What | How | Where it runs |
 |---|---|---|
 | Spark transforms and the streaming plan | a real local `SparkSession` | `pytest`, and `docker compose run --rm --no-deps spark ...` |
 | The API | the real FastAPI app over an in-memory MongoDB (mongomock) | `pytest tests/test_api.py` |
 | The dashboard | Streamlit's `AppTest` runs the real page against the real API | `pytest tests/test_dashboard.py` |
+| The real-data path | sessions, replay timing and the evaluation, plus the whole evaluation script over a fake pair table | `pytest tests/test_data.py` |
 
 The Spark group is also a script: `spark-submit tests/test_transforms.py`
 runs it inside the Spark container with no pytest installed, reporting its
-**161 individual checks**. `pytest` turns any failed check into a failed test,
+**172 individual checks**. `pytest` turns any failed check into a failed test,
 so both routes agree. The Spark group starts a JVM and one Python process per
 core, so give it a couple of free gigabytes - on a laptop already running the
 stack, prefer the container route.
@@ -339,6 +418,11 @@ What the tests cover:
 - the dashboard reads only fields the API actually returns
 - the session-generation rule, the RocksDB state store, and that Compose
   starts every service in a safe order with Prometheus loading its alerts
+- the real-data path: a returning visitor is a new visit, replayed timestamps
+  keep their order and spacing, replaying a slice twice produces the same event
+  ids, a recommender that echoes the query back never scores, an empty answer
+  is a miss rather than a skipped case, and a deliberately wrong model comes
+  out below the bestseller baseline
 
 The transforms are pure `DataFrame -> DataFrame` functions in
 `src/streaming/transforms.py` precisely so this is possible. Streaming logic
@@ -363,9 +447,17 @@ ruff check . && mypy        # the same lint and type checks CI runs: make lint
 | `GET /health` | liveness + MongoDB reachability |
 | `GET /throughput?windows=` | events per window — the pipeline's own measured rate |
 | `GET /pipeline` | processing lag: window close → row written |
-| `GET /graph?limit=` | co-occurrence as nodes and edges |
+| `GET /graph?limit=&minutes=&min_pairs=&min_affinity=` | co-occurrence as nodes and edges, over the same lookback as related-products |
 | `GET /trending?limit=&minutes=` | top products over the last N minutes, by weighted score (cached `CACHE_TTL_SECONDS`) |
 | `GET /related-products/{id}?limit=&score_by=` | co-viewed products ranked by `affinity`, `lift` or `pmi`, with trending fallback |
+
+**Three answers, not two.** `/related-products` and `/graph` answer from the
+recent lookback where they can; when that window is empty they widen to
+everything still retained and say so (`"window": "all_retained"`,
+`"lookback_minutes": null`); only with no pairs at all does
+`/related-products` fall back to trending. `/trending` never widens - it
+reports the last N minutes and, when those are empty, says how old the newest
+window is.
 | `GET /stats` | collection counts, latest window, request counters |
 | `GET /metrics` | Prometheus text format |
 
@@ -377,33 +469,53 @@ curl localhost:8000/related-products/9001 | jq
 {
   "product_id": 9001,
   "source": "co_occurrence",
+  "ranked_by": "affinity",
+  "window": "recent",
+  "lookback_minutes": 30,
+  "count": 1,
   "related_products": [
     {"product_id": 9003, "affinity": 42.6, "pair_count": 18,
+     "peak_users_per_window": 4, "lift": 6.2, "pmi": 2.63, "score": 42.6,
      "name": "Laptop Sleeve 13\"", "price": 1499, "category": "laptop-acc"}
   ]
 }
 ```
 
+`lift` and `pmi` are null when the marginals needed to compute them are
+missing, rather than being reported as zero ([ADR 0003](docs/adr/0003-lift-not-raw-counts.md)).
+
 ---
 
 ## Dashboard
 
-Three panels exist to show the pipeline rather than to decorate the page:
+Six sections, each showing the pipeline rather than decorating the page:
 
+- **Pipeline health** — four tiles. *Processing delay* is
+  `written_at - window_end`: how long after a one-minute window ends its final
+  numbers are saved. A few seconds up to the trigger interval is healthy; a
+  steadily rising number means the job cannot keep up. *Last update*, and the
+  newest full minute's event count and rate, sit beside it — labelled with
+  that window's time and age when the data is not current, so a stopped
+  pipeline never reads as a running one.
 - **Events per minute** — charted from what Spark actually wrote to MongoDB,
   not from a producer-side counter. If the producer is sending but this is
-  flat, the bottleneck is downstream of Kafka.
-- **Processing delay** — `written_at - window_end`, i.e. how long after a
-  one-minute window ends its final numbers are saved. A few seconds up to the
-  trigger interval is healthy; a steadily rising number means the job cannot
-  keep up.
+  flat, the bottleneck is downstream of Kafka. The caption states the window
+  range it is showing.
+- **Products** — click-to-send: *View* and *Add to cart* publish real events
+  straight to Kafka, so you can watch your own click come back as a pair. The
+  first twelve catalogue products are shown (a real catalogue has tens of
+  thousands).
+- **Trending now** and **Related products** — the two serving endpoints, with
+  the answer's source named: co-occurrence, the widened all-retained window,
+  or the trending fallback.
 - **Products viewed together** — the product pairs as a graph: line thickness
-  by affinity, box colour by category. Solid lines join categories the demo
-  data links (laptop + sleeve), dashed lines join the rest (shoes + phone):
-  shoppers wandering across categories (see above). A slider shows more of
-  the weaker links. The line style is display only - the pipeline never sees
-  categories. A thick dashed line such as phone accessories + audio is a link
-  the pipeline found indirectly: both are viewed with phones.
+  by affinity, the number on the line is how many times the pair was seen, box
+  colour by category, with a legend listing the categories actually on the
+  graph. Solid lines join related categories (laptop + sleeve with the demo
+  catalogue, same category with a real one), dashed lines cross them. A slider
+  shows more of the weaker links, and the side panel counts how many lines
+  cross categories and lists the strongest five. The line style is display
+  only — the pipeline never sees categories.
 
 The graph is rendered with `st.graphviz_chart` from a generated DOT string, so
 it needs no extra dependency — no networkx, no pyvis, no plotly.
@@ -426,10 +538,19 @@ scripts/smoke_test.py      end-to-end assertion against a running stack
 scripts/load_test.py       throughput and latency benchmark
 scripts/recovery_test.py   crash-and-restart test
 src/common/bench.py        shared benchmark helpers (standard library only)
+src/common/scoring.py      affinity, lift and PMI ranking - the score_by methods
+src/data/retailrocket.py   real dataset: visits, event mapping, replay clock
+src/data/evaluation.py     hit-rate@10 and the bestseller baseline
+scripts/fetch_dataset.py   download and verify the RetailRocket export
+scripts/replay.py          replay real traffic through Kafka
+scripts/evaluate.py        score the pipeline on held-out days
 monitoring/                Prometheus config, alert rules, Grafana dashboard
 tests/test_transforms.py   Spark transform and streaming tests
 tests/test_api.py          API tests over an in-memory MongoDB
 tests/test_dashboard.py    the Streamlit page, run headless
+tests/test_data.py         sessions, replay timing and the evaluation maths
+tests/conftest.py          turns any failed check() into a failed pytest test
+Makefile                   the same commands, wrapped (macOS and Linux)
 pyproject.toml             pytest, coverage, ruff and mypy settings
 ```
 
@@ -470,9 +591,10 @@ It is harmless.
 
 | | |
 |---|---|
-| [docs/adr/](docs/adr/) | 10 architecture decision records — what was chosen, and what was rejected |
+| [docs/adr/](docs/adr/) | 11 architecture decision records — what was chosen, and what was rejected |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | fault-tolerance demo, load testing, diagnosing lag |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | measured throughput, latency and crash recovery, written by the benchmark scripts |
+| [docs/EVALUATION.md](docs/EVALUATION.md) | hit-rate@10 on real traffic against the bestseller baseline, written by `scripts/evaluate.py` |
 | [DEFECTS_FIXED.md](DEFECTS_FIXED.md) | every defect found and how it was verified |
 
 ## Licence
@@ -485,10 +607,11 @@ MIT - see [LICENSE](LICENSE).
    no embeddings, no personalisation to a specific user's history. It answers
    "what is viewed with this" rather than "what should *you* see next".
    See the [Roadmap](#roadmap).
-2. **No offline evaluation.** There is no held-out set and no precision@k,
-   because the events are synthetic — the ground truth would be the generator's
-   own affinity table, which would measure nothing. Real evaluation needs real
-   clickstream data.
+2. **The quality number needs the dataset.** Hit-rate@10 is measured on real
+   RetailRocket traffic, which is a download away (`scripts/fetch_dataset.py`,
+   free Kaggle account) rather than in the repository. On the generated
+   traffic that ships with the project there is nothing honest to measure:
+   the ground truth would be the generator's own affinity table.
 3. **Single-broker Kafka.** Six partitions let Spark read in parallel, but
    with one broker nothing is replicated; broker failure and partition
    rebalancing are untested.
@@ -504,8 +627,6 @@ MIT - see [LICENSE](LICENSE).
 Planned, **not implemented**. The pipeline is being shaped so these can be
 added without rewriting what exists.
 
-- **Real data and evaluation** - replay the public RetailRocket clickstream and
-  measure hit rate@10 against a bestseller baseline.
 - **Machine learning (later)** - the ranking methods are designed to be
   pluggable, so learned models can sit beside co-occurrence and be compared on
   the same evaluation: item2vec embeddings trained on sessions (Spark MLlib),

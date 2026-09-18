@@ -36,11 +36,19 @@ def stack(monkeypatch):
     client = TestClient(main.app)
 
     class Response:
+        """What `requests` would hand back, including its error type: the
+        dashboard catches requests.RequestException, so a fake that raises
+        httpx's error instead would make a handled 404 look like a crash."""
+
         def __init__(self, inner):
             self._inner = inner
 
         def raise_for_status(self):
-            self._inner.raise_for_status()
+            import requests as _requests
+
+            if self._inner.status_code >= 400:
+                raise _requests.HTTPError(
+                    f"{self._inner.status_code} for {self._inner.url}")
 
         def json(self):
             return self._inner.json()
@@ -117,7 +125,8 @@ def test_graph_marks_cross_category_links(stack):
     app = run()
     dot = app.get("graphviz_chart")[0].proto.spec
     assert "style=solid" in dot and "style=dashed" in dot
-    assert metrics(app)["Cross-category lines"] == "1"       # laptop + shoe
+    # laptop + shoe: one of the three lines crosses categories.
+    assert metrics(app)["Lines crossing categories"] == "1 of 3"
 
 
 def test_showing_more_lines_shows_the_weaker_pairs(stack):
@@ -135,6 +144,166 @@ def test_empty_pipeline_explains_itself(stack):
     assert not app.exception
     text = " ".join(i.value for i in app.info)
     assert "No data yet" in text or "No product pairs yet" in text
+
+
+def test_dashboard_survives_a_real_catalogue(stack, monkeypatch):
+    """A catalogue built from a real dataset has no prices and tens of
+    thousands of items. Formatting a None price crashed the page, and a button
+    pair per item would render for minutes."""
+    from src.common import catalog as catalog_module
+    from src.data import retailrocket as rr
+
+    real = rr.build_catalog(range(9000, 14000), {9000: 1037, 9001: 1037})
+    assert all(p["price"] is None for p in real)
+    monkeypatch.setattr(catalog_module, "PRODUCTS", real)
+    # What CATALOG_FILE being set does: the page must stop explaining the
+    # demo generator's own behaviour as if it were a property of the data.
+    monkeypatch.setattr(catalog_module, "CATALOG_FILE", "catalog.json")
+
+    fill(stack)
+    app = run()
+
+    assert not app.exception, app.exception
+    views = [b for b in app.button if b.label == "View"]
+    assert len(views) == 12, f"{len(views)} products rendered buttons"
+    captions = " ".join(c.value for c in app.caption)
+    assert "of 5,000 catalogue items" in captions
+    assert "Rs None" not in captions
+    # The chooser offers what has data plus a bounded slice of the catalogue,
+    # never all 5,000.
+    options = app.selectbox[0].options
+    assert 0 < len(options) <= 4 + 50
+    assert "demo data does in about 15%" not in captions
+    assert "same category" in captions
+
+
+def test_the_page_says_when_it_is_showing_history_not_now(stack):
+    """A finished replay leaves pairs outside the lookback. The page must not
+    present that history as live activity."""
+    fill(stack, pairs=[(LAPTOP, SLEEVE, 30)])
+    # Move every row well outside the lookback, the way a finished replay
+    # leaves them once the clock moves on.
+    shift = timedelta(hours=10)
+    for collection in (config.COLL_TRENDING, config.COLL_PAIRS):
+        for row in list(stack._db[collection].find()):
+            stack._db[collection].update_one(
+                {"_id": row["_id"]},
+                {"$set": {"window_start": row["window_start"] - shift,
+                          "window_end": row["window_end"] - shift}})
+
+    app = run()
+    assert not app.exception
+    captions = " ".join(c.value for c in app.caption)
+    assert "everything still retained" in captions or "retained history" in captions
+
+
+def test_the_graph_colours_the_categories_it_actually_has(stack, monkeypatch):
+    """Every node used to come out grey on a real catalogue, under a legend
+    advertising the demo's six categories - colours that appeared nowhere in
+    the picture."""
+    from src.common import catalog as catalog_module
+    from src.data import retailrocket as rr
+    from src.ui import dashboard as ui
+
+    real = rr.build_catalog([LAPTOP, XPS, SLEEVE, SHOE],
+                            {LAPTOP: 7, XPS: 7, SLEEVE: 9, SHOE: 11})
+    monkeypatch.setattr(catalog_module, "PRODUCTS", real)
+    monkeypatch.setattr(catalog_module, "_BY_ID", {p["id"]: p for p in real})
+    monkeypatch.setattr(catalog_module, "CATALOG_FILE", "catalog.json")
+    monkeypatch.setattr(catalog_module, "AFFINITY",
+                        {p["category"]: [p["category"]] for p in real})
+
+    fill(stack)
+    app = run()
+    assert not app.exception, app.exception
+
+    dot = app.get("graphviz_chart")[0].proto.spec
+    used = [line.split('fillcolor="')[1].split('"')[0]
+            for line in dot.splitlines() if "fillcolor=" in line and "n" in line]
+    assert used, "no nodes drawn"
+    assert set(used) != {ui.CATEGORY_COLOUR["unknown"]}, "every node grey again"
+    # Same category, same colour; different categories, different colours.
+    colours = ui.colour_map([p["category"] for p in real])
+    assert colours["cat-7"] != colours["cat-9"] != colours["cat-11"]
+    assert len(set(colours.values())) == len({p["category"] for p in real})
+
+    markdown = " ".join(m.value for m in app.markdown)
+    assert "Laptops" not in markdown and "Footwear" not in markdown
+    assert "cat-7" in markdown, "the legend must name the graph's categories"
+
+
+def test_stale_windows_are_labelled_as_history(stack):
+    """A finished replay leaves the newest window an hour behind. Calling it
+    'the last full minute' reports a stopped pipeline as a running one."""
+    fill(stack)
+    shift = timedelta(minutes=45)
+    for collection in (config.COLL_TRENDING, config.COLL_PAIRS):
+        for row in list(stack._db[collection].find()):
+            stack._db[collection].update_one(
+                {"_id": row["_id"]},
+                {"$set": {"window_start": row["window_start"] - shift,
+                          "window_end": row["window_end"] - shift}})
+
+    app = run()
+    assert not app.exception
+    labels = {m.label for m in app.metric}
+    assert "Events in the newest full minute" in labels
+    assert "Events in the last full minute" not in labels
+    captions = " ".join(c.value for c in app.caption)
+    assert "one-minute windows" in captions
+    assert "still in progress" not in captions, "no window is in progress"
+    assert "minutes ago" in captions
+    info = " ".join(i.value for i in app.info)
+    assert "No events in the last" in info, "trending must say why it is empty"
+
+
+def test_the_numbers_on_the_page_are_the_numbers_in_the_database(stack):
+    """Arithmetic, from first principles.
+
+    Seed windows whose totals can be worked out by hand, then check the page
+    against them: the per-minute event count, the rate, how many edges survive
+    de-duplication, how many products that leaves, and the affinity summed
+    across windows. If any aggregation drifts, these stop matching.
+    """
+    products = range(1, 30)
+    pairs = {(101, 102): 90, (101, 103): 40, (102, 104): 25, (105, 106): 15}
+    windows = 6
+    start = minute(windows + 1)
+    written = datetime.now(timezone.utc)
+    for w in range(windows):
+        opened = start + timedelta(minutes=w)
+        for product in products:
+            stack._db[config.COLL_TRENDING].insert_one({
+                "window_start": opened, "window_end": opened + timedelta(minutes=1),
+                "product_id": product, "event_count": 500 + product,
+                "score": float(500 + product), "unique_users": 5,
+                "_updated_at": written})
+        for (a, b), count in pairs.items():
+            for first, second in ((a, b), (b, a)):      # the sink mirrors pairs
+                stack._db[config.COLL_PAIRS].insert_one({
+                    "window_start": opened,
+                    "window_end": opened + timedelta(minutes=1),
+                    "product_id": first, "related_product_id": second,
+                    "pair_count": count, "affinity": float(count * 3),
+                    "unique_users": 2, "_updated_at": written})
+
+    app = run()
+    assert not app.exception, app.exception
+    shown = metrics(app)
+
+    per_window = sum(500 + p for p in products)                     # 14,935
+    assert shown["Events in the last full minute"] == f"{per_window:,}"
+    assert shown["Events per second"] == f"{per_window / 60:,.1f}"
+
+    # Each pair was written twice (both directions) in each of six windows;
+    # the graph must show one edge per pair, once.
+    assert shown["Lines drawn"] == str(len(pairs))
+    assert shown["Products shown"] == str(len({p for pair in pairs for p in pair}))
+
+    strongest = [c.value for c in app.caption if " + " in c.value and "score" in c.value]
+    expected = [f"score {count * 3 * windows}.0"
+                for _, count in sorted(pairs.items(), key=lambda kv: -kv[1])]
+    assert [line.split(" - ")[-1] for line in strongest] == expected
 
 
 def test_dashboard_says_so_when_the_api_is_down(stack, monkeypatch):

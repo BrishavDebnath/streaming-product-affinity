@@ -12,10 +12,15 @@ together, so the co-occurrence pipeline has real signal to find rather
 than uniform noise.
 """
 
+import json
+import os
 import random
+from pathlib import Path
 from typing import Any
 
-PRODUCTS: list[dict] = [
+# The demo catalogue. Replaced at import time when CATALOG_FILE points at a
+# catalogue built from a real dataset - see `load_file` below.
+DEMO_PRODUCTS: list[dict] = [
     {"id": 9001, "name": "Apple MacBook Air M3", "price": 114900, "category": "laptop"},
     {"id": 9002, "name": "Dell XPS 13",          "price": 99990,  "category": "laptop"},
     {"id": 9003, "name": "Laptop Sleeve 13\"",   "price": 1499,   "category": "laptop-acc"},
@@ -32,12 +37,10 @@ PRODUCTS: list[dict] = [
 
 USERS: list[int] = list(range(1001, 1051))       # 50 simulated shoppers
 
-_BY_ID = {p["id"]: p for p in PRODUCTS}
-
 # Categories a shopper plausibly browses in the same session. This is what
 # makes the pipeline's output checkable: if it works, laptops should
 # surface laptop accessories, not footwear.
-AFFINITY: dict[str, list[str]] = {
+DEMO_AFFINITY: dict[str, list[str]] = {
     "laptop": ["laptop", "laptop-acc"],
     "laptop-acc": ["laptop-acc", "laptop"],
     "phone": ["phone", "phone-acc", "audio"],
@@ -45,6 +48,43 @@ AFFINITY: dict[str, list[str]] = {
     "audio": ["audio", "phone"],
     "footwear": ["footwear"],
 }
+
+
+def load_file(path: str) -> list[dict]:
+    """A catalogue built from a real dataset, written by scripts/replay.py.
+
+    Real items have no names or prices worth showing - RetailRocket hashes its
+    item properties - so an entry is an id, a label and a category id. The
+    shape is still validated, because a malformed catalogue would otherwise
+    surface as a KeyError deep inside the API.
+    """
+    products = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(products, list) or not products:
+        raise ValueError(f"{path} does not contain a non-empty list of products")
+    for product in products:
+        missing = {"id", "name", "category"} - set(product)
+        if missing:
+            raise ValueError(f"{path}: product {product} is missing {sorted(missing)}")
+        product.setdefault("price", None)
+    return products
+
+
+# Which catalogue this process uses. Unset (the default) is the demo
+# catalogue; set to a file, every part of the stack labels real items instead.
+CATALOG_FILE = os.getenv("CATALOG_FILE", "").strip()
+
+if CATALOG_FILE:
+    PRODUCTS = load_file(CATALOG_FILE)
+    # A real dataset has no hand-written affinity between categories: the only
+    # thing known is which category an item belongs to, so a link is "related"
+    # when both ends share one. The pipeline still has to discover the links
+    # themselves from traffic.
+    AFFINITY = {c: [c] for c in {p["category"] for p in PRODUCTS}}
+else:
+    PRODUCTS = DEMO_PRODUCTS
+    AFFINITY = DEMO_AFFINITY
+
+_BY_ID = {p["id"]: p for p in PRODUCTS}
 
 
 def categories_related(a: str, b: str) -> bool:
@@ -63,6 +103,11 @@ def get(product_id: int) -> dict | None:
 def name_of(product_id: int) -> str:
     product = _BY_ID.get(product_id)
     return product["name"] if product else f"Unknown product {product_id}"
+
+
+def is_demo() -> bool:
+    """True when the built-in demo catalogue is in use."""
+    return not CATALOG_FILE
 
 
 def in_categories(categories: list[str]) -> list[dict]:
