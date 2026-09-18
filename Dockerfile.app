@@ -1,6 +1,6 @@
 # Image for the Python services: API, dashboard, producer, seed, smoke test.
 # The Spark job has its own image (Dockerfile.spark).
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
