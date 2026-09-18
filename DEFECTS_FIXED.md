@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 74 tests (Spark, API, dashboard), plus CI on every push |
+| No tests | 114 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503 rather than 500.
 - `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all three groups (74 tests); the Spark group still runs as a
+- `pytest` runs all four groups (114 tests); the Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -641,3 +641,176 @@ here imports numpy; it arrives with pandas), and a test asserts both that
 setting and the 3.10 target, so raising one without the other fails. Verified
 by reproducing the exact error under Python 3.12 with numpy 2.5.3 and
 watching it clear.
+
+# Twelfth pass - real data
+
+### 67. Every number the project quoted was about speed, not quality
+Throughput, latency and recovery were measured; whether the recommendations
+were any good was not, and could not be: the generator's own `AFFINITY` table
+decides which products co-occur, so measuring the pipeline against it would
+score the pipeline on rediscovering a rule that was handed to it. **Changed:**
+the same pipeline now also runs on RetailRocket - 2.7M real events - through
+`scripts/fetch_dataset.py`, `scripts/replay.py` and `scripts/evaluate.py`, and
+`docs/EVALUATION.md` records hit-rate@10 on held-out days next to a bestseller
+baseline. See [ADR 0011](docs/adr/0011-real-data-and-evaluation.md).
+
+### 68. Three things would have made a naive replay meaningless
+Each one silent rather than loud:
+- **No session ids.** RetailRocket has only visitor ids. Keying co-occurrence
+  on the visitor pairs products a shopper saw three weeks apart. Visits are now
+  cut at 30 minutes of inactivity.
+- **2015 timestamps.** Sent as they are, every window the pipeline wrote would
+  land eleven years before the API's lookback: the dashboard would show
+  nothing and the run would look like a pipeline failure. Timestamps are now
+  mapped onto the replay's own clock, keeping order and relative spacing, and
+  the replay reports the compression factor and warns when it would push a
+  visit wider than the co-view gap.
+- **Random event ids.** Replaying a slice twice would double-count everything.
+  Ids are now derived from the session and position, so a repeat converges.
+
+### 69. An evaluation harness that cannot say "worse" proves nothing
+The first version scored only the pipeline and skipped cases where it had no
+answer - which quietly turns "answers 5% of queries" into a good-looking
+average. **Changed:** an empty answer is a miss and lowers coverage, which is
+reported next to the hit-rate; the query product is dropped before the top-k is
+taken, so echoing it back can never score; and a test feeds the harness a
+deliberately wrong model and asserts it lands below the baseline.
+
+### 70. A replay silently lost its last two minutes of data
+Found on the first real run. Spark advances a watermark on event time, and
+during a replay the replay is the only thing producing event time. When it
+stopped, the windows holding its final minutes never closed - so on a
+five-minute slice the pair counts quietly missed most of the last two minutes,
+and nothing in the logs said so. **Changed:** the replay now ends by sending a
+few events timestamped past the end of the slice, which pushes the watermark
+over the line; they use a reserved product id (-1) and a fresh session each,
+so they can form no pair, and their own trending rows are deleted once Spark
+has written them. `--flush-only` does it for a replay that has already run.
+Two tests assert the events move time forward and change nothing else.
+
+### 71. The replay's progress log reported today's date as the dataset day
+Cosmetic, but it made the one line that shows where in the dataset a replay
+has reached useless: it read the day back out of the wire event, whose
+timestamp has already been mapped onto the replay clock, so it always printed
+today. **Changed:** each row carries its original dataset time, and a test
+asserts the reported day is the dataset's.
+
+### 72. The evaluation reported 0.000% for a misconfigured serving layer
+The first real evaluation run scored the pipeline at 0.000% with 0% coverage,
+which looked like a catastrophic model and was nothing of the kind: the API
+container was still serving the twelve-product demo catalogue, so every real
+item id was a 404 and every query came back empty. The run even wrote that
+zero into `docs/EVALUATION.md`. **Changed:** when more than half the query
+products come back unknown, the script now fails with the exact command that
+fixes it (setting `CATALOG_FILE`) and writes no report - a serving layer that
+does not recognise the products is a misconfiguration, not a measurement. A
+test drives the whole script against an API that 404s everything and asserts
+it exits non-zero, names `CATALOG_FILE`, and leaves no report behind.
+
+### 73. The dashboard crashed on the first real catalogue
+`TypeError: unsupported format string passed to NoneType.__format__` at
+`dashboard.py:238`, the moment the stack was pointed at a catalogue built from
+RetailRocket. Real items have no price - the dataset hashes its properties, so
+the catalogue honestly carries `None` - and the product caption formatted it
+with `:,`. The dashboard tests never caught it because they only ever ran
+against the demo catalogue, where every product has a price. **Changed:** the
+caption shows the category alone when there is no price, and a test runs the
+real page against a 5,000-item catalogue with no prices.
+
+### 74. The page would have rendered 50,743 products
+The same run would have drawn two buttons for every catalogue item and offered
+a 50,000-entry select box. **Changed:** the click-to-send strip shows the
+first 12 and says how many exist; the "Related products" chooser offers what
+is currently trending (products that actually have data) plus a bounded slice
+of the catalogue. Asserted in the same test.
+
+### 75. A handled 404 looked like a crash in the dashboard tests
+Found while writing the test above: the fake `requests.get` used by the
+dashboard tests raised httpx's `HTTPStatusError`, which the dashboard does not
+catch, so a 404 the real page handles quietly appeared as an unhandled
+exception. The test harness was lying about the library it stood in for.
+**Changed:** the fake raises `requests.HTTPError` like the real thing, and the
+page now says "No data for this product yet" instead of rendering nothing.
+
+### 76. The graph caption explained the demo generator as if it were the data
+On a real catalogue the "Products viewed together" caption still said dashed
+lines were "shoppers wandering, which the demo data does in about 15% of
+views" - a statement about the synthetic generator, printed underneath real
+RetailRocket pairs. **Changed:** with a real catalogue the caption says what
+the data actually supports (solid lines join two products from the same
+category, dashed lines cross categories) and the demo explanation appears only
+with the demo catalogue. Asserted in the real-catalogue dashboard test.
+
+### 77. Two endpoints answered from a window they did not report
+Found by asking why "Trending now" was empty while the graph beside it was
+full. `/trending` honestly reports the last 30 minutes, and after a finished
+replay that is genuinely empty. But:
+- `/related-products` widened its query to the whole retained history whenever
+  the 30-minute lookback came back empty, while still reporting
+  `"lookback_minutes": 30`. A caller could not tell a live answer from an
+  hours-old one. Worse, it then divided those all-history pair counts by
+  30 minutes of per-product marginals, so any lift computed on that path was
+  meaningless.
+- `/graph` applied no time filter at all: it summed every window still
+  retained. A 30-minute "trending" panel and an all-time affinity graph sat
+  side by side on the same page, both unlabelled.
+**Changed:** both endpoints report `window` (`recent` or `all_retained`) and
+set `lookback_minutes` to null when they widened; the graph takes the same
+lookback as related-products with a `minutes` override; lift marginals are
+computed over whichever window actually answered; and the dashboard says when
+it is showing retained history rather than live activity. Four tests cover
+both endpoints and the page.
+
+### 78. A dashboard audit against real data: four more
+Asked to check the whole page rather than the one crash, with the page
+rendered against a database seeded to match a finished replay:
+- **Every node in the graph was grey.** Node colour came from a six-entry map
+  of demo category names, so a real dataset's `cat-1091` fell through to
+  "unknown" and the graph's only grouping was lost. Colours are now assigned
+  per graph, by position rather than by hashing the name - a hash collides,
+  and two categories sharing a colour makes the legend say something the
+  picture does not.
+- **The legend advertised categories that were not there.** It always listed
+  the demo's six (Laptops, Phones, ...), whatever was on screen. It now lists
+  the categories the graph actually contains, with "+ N more" past eight.
+- **"Events in the last full minute" was 45 minutes old.** The metric took the
+  newest completed window, whatever its age, so a stopped pipeline read as a
+  running one. It now says "newest full minute" with the window's time and age
+  when the data is not current.
+- **The throughput caption claimed "Last 6 minutes ... the last bar is the
+  minute still in progress."** Both false after a replay. It now states the
+  window range, how long ago it ended, and only claims a bar is in progress
+  when one actually is.
+Also: `/trending` returned an empty list with no explanation when rows existed
+but none inside the lookback, and the page said "No data yet" next to a
+sidebar counting 82,490 rows. The API now says "No events in the last 30
+minutes. The newest window ended 45 minutes ago." Six tests cover these.
+
+### 79. Documentation that had drifted from the code
+A full audit of README.md against the source, prompted by "check everything":
+- "Every sink upserts on a natural key (`window_start, window_end,
+  product_id`)" was wrong for two of the three sinks: pairs key on four fields
+  (the related product too), and the dead-letter sink appends rather than
+  upserting.
+- The reproduce command said `--test-days 1` while the quoted numbers came
+  from a 7-day test. The command, the Compose comment and the Makefile now
+  all say 7, so running the documented line reproduces the documented table.
+- The `/graph` row listed two of its four query parameters; the
+  `/related-products` example response was missing `ranked_by`, `window`,
+  `lookback_minutes`, `count` and four per-row fields; and nothing documented
+  the widened `all_retained` window at all.
+- "Three panels" described a page that has six sections, and left out
+  click-to-send and the graph legend entirely.
+- The Layout tree omitted `src/common/scoring.py`, `tests/conftest.py` and the
+  `Makefile`, each referenced elsewhere in the same README.
+- `results/evaluation.json` was cited as though committed; it is git-ignored
+  and written locally, and now says so.
+
+### 80. A test that failed about one run in fifteen
+`test_pipeline_reports_how_far_behind_the_last_write_was` built a row one
+minute old and stamped it "written four seconds after the window closed" -
+which lands in the FUTURE whenever the test starts in the first four seconds
+of a minute, making staleness negative and the assertion fail. It had been
+passing by luck. **Changed:** the window is two minutes old, so the write time
+is in the past at every second of the clock while still inside the 120-second
+freshness threshold. Run repeatedly to confirm.

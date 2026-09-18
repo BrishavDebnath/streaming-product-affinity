@@ -26,6 +26,15 @@ x-app: &app
     KAFKA_BOOTSTRAP: kafka:29092
     MONGO_URI: mongodb://mongo:27017
     API_BASE_URL: http://api:8000
+    # Empty (the default) = the built-in demo catalogue. Point it at a
+    # catalogue built from a real dataset to label real items instead:
+    #     CATALOG_FILE=data/catalog_retailrocket.json docker compose up -d
+    CATALOG_FILE: ${CATALOG_FILE:-}
+  # data/ holds the downloaded dataset and the catalogue built from it. It is
+  # git-ignored and empty until scripts/fetch_dataset.py runs; mounting it
+  # read-only on every app service means CATALOG_FILE works everywhere.
+  volumes:
+    - ./data:/app/data:ro
 
 services:
   kafka:
@@ -224,6 +233,7 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
+      - ./data:/app/data:ro
       - ./docs:/app/docs
       - ./results:/app/results
     depends_on:
@@ -244,8 +254,44 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
+      - ./data:/app/data:ro
       - ./docs:/app/docs
       - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Replays real RetailRocket traffic through Kafka (docs/EVALUATION.md):
+  #     docker compose run --rm replay --days 7
+  # data/ is writable here because the replay writes the catalogue it builds.
+  replay:
+    <<: *app
+    container_name: affinity-replay
+    profiles: ["tools"]
+    user: root
+    entrypoint: ["python", "scripts/replay.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  # Scores the pipeline against the bestseller baseline on held-out days:
+  #     docker compose run --rm evaluate --train-days 7 --test-days 7
+  evaluate:
+    <<: *app
+    container_name: affinity-evaluate
+    profiles: ["tools"]
+    user: root
+    entrypoint: ["python", "scripts/evaluate.py"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data:ro
+      - ./docs:/app/docs
+      - ./results:/app/results
     depends_on:
       api:
         condition: service_healthy

@@ -49,6 +49,48 @@ CATEGORY_LABEL = {
     "audio": "Audio", "footwear": "Footwear",
 }
 
+# A real dataset's categories are numeric ids nobody hand-picked a colour for.
+# Colouring them all "unknown" grey threw away the only grouping the graph
+# has.
+PALETTE = ["#2563eb", "#059669", "#d97706", "#dc2626", "#7c3aed", "#0891b2",
+           "#ca8a04", "#be185d", "#15803d", "#4338ca", "#b45309", "#0f766e"]
+
+
+def colour_map(categories) -> dict:
+    """One colour per category ON THIS GRAPH.
+
+    Assigned by position in the sorted list rather than by hashing the name:
+    a hash collides, and two different categories sharing a colour makes the
+    legend say something the picture does not. Demo categories keep their
+    hand-picked colours so the generated data still reads the same.
+    """
+    ordered = sorted(set(categories), key=lambda c: (c == "uncategorised", str(c)))
+    spare = [c for c in PALETTE if c not in CATEGORY_COLOUR.values()] + PALETTE
+    colours, taken = {}, 0
+    for category in ordered:
+        if category in CATEGORY_COLOUR:
+            colours[category] = CATEGORY_COLOUR[category]
+        elif not category or category == "uncategorised":
+            colours[category] = CATEGORY_COLOUR["unknown"]
+        else:
+            colours[category] = spare[taken % len(spare)]
+            taken += 1
+    return colours
+
+
+# How many products get click-to-send buttons. The demo catalogue has twelve;
+# a catalogue built from a real dataset has tens of thousands, and Streamlit
+# would render two buttons for every one of them.
+CLICKABLE_PRODUCTS = 12
+
+# How many catalogue products the "Related products" chooser offers besides
+# the ones currently trending. Same reason: a 50,000-entry select is a slow
+# page and mostly items with no data behind them.
+CHOOSABLE_PRODUCTS = 50
+
+# Legend entries. A real dataset can put dozens of categories on one graph.
+LEGEND_CATEGORIES = 8
+
 COLLECTION_LABEL = {
     config.COLL_TRENDING: "Trending rows",
     config.COLL_PAIRS: "Product pairs",
@@ -100,7 +142,7 @@ def api(path, quiet=False):
         return None
 
 
-def build_dot(graph, related=None):
+def build_dot(graph, related=None, colours=None):
     """
     Graphviz DOT for the co-occurrence graph.
 
@@ -117,8 +159,9 @@ def build_dot(graph, related=None):
              '  node [shape=box style="rounded,filled" fontname="Helvetica" '
              'fontsize=10 fontcolor="white" penwidth=0];']
     category_of = {node["id"]: node["category"] for node in graph["nodes"]}
+    colours = colours or colour_map(category_of.values())
     for node in graph["nodes"]:
-        colour = CATEGORY_COLOUR.get(node["category"], CATEGORY_COLOUR["unknown"])
+        colour = colours.get(node["category"], CATEGORY_COLOUR["unknown"])
         label = node["name"].replace('"', "'")
         lines.append(f'  n{node["id"]} [label="{label}" fillcolor="{colour}"];')
 
@@ -204,8 +247,20 @@ finished = [s for s in (tput or {}).get("series", [])
             if s.get("window_end") and _naive_utc(s["window_end"]) <= now_utc]
 if finished:
     recent = finished[-1]
-    m3.metric("Events in the last full minute", f"{recent['events']:,}")
-    m4.metric("Events per second", recent["events_per_second"] or "-")
+    window_age = (now_utc - _naive_utc(recent["window_end"])).total_seconds() / 60
+    # "the last full minute" is only true while events are still arriving.
+    # After a replay finishes, the newest completed window can be an hour old,
+    # and labelling it as the last minute misreports a stopped pipeline as a
+    # running one.
+    label = ("Events in the last full minute" if window_age < 2
+             else "Events in the newest full minute")
+    m3.metric(label, f"{recent['events']:,}",
+              help=f"Window {_naive_utc(recent['window_start']):%H:%M}-"
+                   f"{_naive_utc(recent['window_end']):%H:%M} UTC"
+                   + (f", {window_age:.0f} minutes ago" if window_age >= 2 else ""))
+    rate = recent["events_per_second"]
+    m4.metric("Events per second", f"{rate:,.1f}" if rate is not None else "-",
+              help="Over that same window.")
 else:
     m3.metric("Events in the last full minute", "-")
     m4.metric("Events per second", "-")
@@ -221,22 +276,42 @@ if tput and tput["series"]:
     df["Minute"] = pd.to_datetime(df["window_start"]).dt.strftime("%H:%M")
     st.bar_chart(df.set_index("Minute")[["events"]].rename(
         columns={"events": "Events"}), height=220)
-    st.caption(f"Last {len(df)} minutes, counted from what Spark saved - not "
-               "from the producer's own counter. Times are UTC. The last bar "
-               "is the minute still in progress.")
+    # The chart shows the newest windows Spark wrote, which are not
+    # necessarily the last N minutes: after a replay they can be an hour old.
+    # Saying "last 6 minutes" there would misdescribe the data on screen.
+    span_end = _naive_utc(df["window_end"].iloc[-1])
+    still_open = span_end > now_utc
+    span_age = (now_utc - span_end).total_seconds() / 60
+    st.caption(
+        f"{len(df)} one-minute windows, "
+        f"{_naive_utc(df['window_start'].iloc[0]):%H:%M}-{span_end:%H:%M} UTC"
+        + ("" if still_open or span_age < 2
+           else f", ending {span_age:.0f} minutes ago")
+        + ". Counted from what Spark saved, not from the producer's own "
+        + ("counter. The last bar is the minute still in progress."
+           if still_open else "counter."))
 else:
     st.info("No data yet. Start the producer; the first numbers appear within "
             "about a minute.")
 
 # ------------------------------------------------------------------ products
 st.subheader("Products")
-st.caption("Click to send your own events into the pipeline.")
+# A demo catalogue has a dozen products; one built from a real dataset has
+# tens of thousands, and a button pair for each would render for minutes.
+clickable = catalog.PRODUCTS[:CLICKABLE_PRODUCTS]
+st.caption("Click to send your own events into the pipeline."
+           + (f" Showing {len(clickable)} of {len(catalog.PRODUCTS):,} "
+              f"catalogue items." if len(catalog.PRODUCTS) > len(clickable) else ""))
 cols = st.columns(4)
-for i, item in enumerate(catalog.PRODUCTS):
+for i, item in enumerate(clickable):
     with cols[i % 4]:
         st.markdown(f"**{item['name']}**")
-        st.caption(f"Rs {item['price']:,} - "
-                   f"{CATEGORY_LABEL.get(item['category'], item['category'])}")
+        # Real datasets have no prices - RetailRocket hashes its item
+        # properties - so the catalogue carries None rather than a made-up
+        # number, and the caption is the category alone.
+        label = CATEGORY_LABEL.get(item["category"], item["category"])
+        price = item.get("price")
+        st.caption(f"Rs {price:,} - {label}" if price is not None else label)
         c1, c2 = st.columns(2)
         if c1.button("View", key=f"v{item['id']}"):
             emit(user_id, item["id"], "view")
@@ -251,6 +326,7 @@ left, right = st.columns(2)
 with left:
     st.subheader("Trending now")
     data = api("/trending?limit=8", quiet=True)
+    trending_ids = [r["product_id"] for r in (data or {}).get("trending", [])]
     if data and data["trending"]:
         st.caption(f"Most popular products in the last {data['minutes']} minutes")
         rows = [{"Product": r["name"] or r["product_id"],
@@ -265,9 +341,19 @@ with left:
 
 with right:
     st.subheader("Related products")
-    target = st.selectbox("Shoppers who viewed", catalog.product_ids(),
+    # Products that currently HAVE data come first: on a real catalogue of
+    # tens of thousands, a plain product list is both slow to render and
+    # mostly items the pipeline has never seen.
+    options = trending_ids + [p for p in catalog.product_ids()[:CHOOSABLE_PRODUCTS]
+                              if p not in trending_ids]
+    target = st.selectbox("Shoppers who viewed", options,
                           format_func=catalog.name_of)
     data = api(f"/related-products/{target}?limit=8", quiet=True)
+    if data is None:
+        st.info("No data for this product yet.")
+    if data and data.get("window") == "all_retained":
+        st.caption("Nothing in the recent lookback for this product, so these "
+                   "come from the whole retained history.")
     if data:
         if data["source"] == "trending_fallback":
             st.info("Not enough data for this product yet, so these are "
@@ -287,38 +373,65 @@ with right:
 
 # ------------------------------------------------------------ affinity graph
 st.subheader("Products viewed together")
+# The demo catalogue has hand-written category affinities to explain; a
+# catalogue from a real dataset has only the category an item belongs to, so
+# the caption must not claim knowledge the data does not contain.
 st.caption("Each line joins two products viewed in the same shopping session. "
            "Thicker lines mean a stronger link; the number is how many times "
-           "the pair was seen. Solid lines join categories that go together "
-           "(a laptop and a laptop sleeve); dashed lines join categories that "
-           "do not (shoes and a phone) - shoppers wandering, which the demo "
-           "data does in about 15% of views. The weakest links are hidden "
-           "until you show more lines.")
+           "the pair was seen. "
+           + ("Solid lines join categories that go together (a laptop and a "
+              "laptop sleeve); dashed lines join categories that do not (shoes "
+              "and a phone) - shoppers wandering, which the demo data does in "
+              "about 15% of views. "
+              if catalog.is_demo() else
+              "Solid lines join two products from the same category; dashed "
+              "lines cross categories. ")
+           + "The weakest links are hidden until you show more lines.")
 links = st.slider("Lines shown (strongest first)", min_value=10, max_value=70,
                   value=30, step=5,
-                  help="12 products make at most 66 pairs. Move this to the "
-                       "right to see the weak cross-category links.")
+                  help=("12 products make at most 66 pairs. Move this to the "
+                        "right to see the weak cross-category links."
+                        if catalog.is_demo() else
+                        f"The catalogue has {len(catalog.PRODUCTS):,} products, "
+                        "far more pairs than a readable graph: this is the "
+                        "strongest few. Move it right for weaker links."))
 graph = api(f"/graph?limit={links}", quiet=True)
+if graph and graph.get("window") == "all_retained":
+    st.caption("No pairs inside the recent lookback, so this is everything "
+               "still retained - the history of a finished run rather than "
+               "what is happening now.")
 if graph and graph["edges"]:
+    # One colour assignment, shared by the picture and its legend.
+    graph_colours = colour_map(n["category"] for n in graph["nodes"])
     gcol, lcol = st.columns([3, 1])
     with gcol:
-        st.graphviz_chart(build_dot(graph, catalog.categories_related),
-                          width="stretch")
+        st.graphviz_chart(
+            build_dot(graph, catalog.categories_related, graph_colours),
+            width="stretch")
     with lcol:
         st.metric("Products shown", graph["node_count"])
         st.metric("Lines drawn", graph["edge_count"])
+        # The legend lists the categories ON THIS GRAPH. It used to list the
+        # demo catalogue's six regardless, so against a real dataset it
+        # advertised colours that appeared nowhere in the picture.
         st.markdown("**Categories**")
-        for category, label in CATEGORY_LABEL.items():
+        shown = sorted({n["category"] for n in graph["nodes"]},
+                       key=lambda c: (c == "uncategorised", c))
+        for category in shown[:LEGEND_CATEGORIES]:
             st.markdown(
-                f'<span style="color:{CATEGORY_COLOUR[category]};'
+                f'<span style="color:{graph_colours[category]};'
                 f'font-size:20px">&#9632;</span> '
-                f'<span style="font-size:13px">{label}</span>',
+                f'<span style="font-size:13px">'
+                f'{CATEGORY_LABEL.get(category, category)}</span>',
                 unsafe_allow_html=True)
+        if len(shown) > LEGEND_CATEGORIES:
+            st.caption(f"+ {len(shown) - LEGEND_CATEGORIES} more categories")
         category_of = {n["id"]: n["category"] for n in graph["nodes"]}
         cross = [e for e in graph["edges"]
                  if not catalog.categories_related(category_of[e["source"]],
                                                    category_of[e["target"]])]
-        st.metric("Cross-category lines", len(cross))
+        st.metric("Lines crossing categories",
+                  f"{len(cross)} of {graph['edge_count']}")
         st.markdown("**Strongest links**")
         for edge in sorted(graph["edges"],
                            key=lambda e: e["affinity"], reverse=True)[:5]:

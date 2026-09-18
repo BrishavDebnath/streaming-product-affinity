@@ -445,12 +445,22 @@ def test_dashboard_dot_generation():
     src = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "src", "ui", "dashboard.py"),
         encoding="utf-8").read()
-    start = src.index("def build_dot")
-    end = src.index("st.title(")
     ns = {"CATEGORY_COLOUR": {"laptop": "#2563eb", "laptop-acc": "#60a5fa",
-                              "unknown": "#9ca3af"}}
-    exec(src[start:end].split("\n\n\n")[0], ns)          # noqa: S102
+                              "unknown": "#9ca3af"},
+          "PALETTE": ["#7c3aed", "#0891b2", "#ca8a04", "#be185d"]}
+    # Both functions the graph needs, taken straight from the page's source so
+    # the test needs no Streamlit but still checks the real code.
+    for name in ("def colour_map", "def build_dot"):
+        start = src.index(name)
+        exec(src[start:src.index("st.title(")].split("\n\n\n")[0], ns)  # noqa: S102
     build_dot = ns["build_dot"]
+    colour_map = ns["colour_map"]
+
+    check("a category keeps one colour, and two categories never share one",
+          len({*colour_map(["a", "b", "c"]).values()}) == 3
+          and colour_map(["a", "b"])["a"] == colour_map(["a", "z"])["a"])
+    check("a real dataset's categories are not all 'unknown' grey",
+          colour_map(["cat-1091"])["cat-1091"] != ns["CATEGORY_COLOUR"]["unknown"])
 
     graph = {"nodes": [{"id": 9001, "name": 'Apple MacBook Air M3',
                         "category": "laptop", "degree": 1},
@@ -1137,6 +1147,39 @@ def test_benchmark_tools_are_wired():
           and "deriv(affinity_kafka_lag_offsets" not in alerts)
 
 
+def test_real_data_tools_are_wired():
+    """The dataset path has to work in the container too, not just on a host:
+    the catalogue is read by the API and the dashboard, so every app service
+    needs the folder it lives in."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    compose = open(os.path.join(root, "docker-compose.yml"), encoding="utf-8").read()
+
+    def block(name):
+        return compose.split(f"\n  {name}:\n", 1)[1].split("\n\n", 1)[0]
+
+    check("the catalogue is selectable without editing the compose file",
+          "CATALOG_FILE: ${CATALOG_FILE:-}" in compose)
+    check("every app service can read data/ (the shared anchor mounts it)",
+          "- ./data:/app/data:ro" in compose.split("services:", 1)[0])
+    replay, evaluate = block("replay"), block("evaluate")
+    check("replay and evaluate only run on request",
+          'profiles: ["tools"]' in replay and 'profiles: ["tools"]' in evaluate)
+    check("replay can write the catalogue it builds",
+          "- ./data:/app/data\n" in replay)
+    check("the evaluation cannot modify the dataset",
+          "- ./data:/app/data:ro" in evaluate)
+    check("evaluation results land in the project folder",
+          "./docs:/app/docs" in evaluate and "./results:/app/results" in evaluate)
+    check("the replay waits for the topic to exist",
+          "kafka-init" in replay)
+    check("the evaluation waits for the API",
+          "api:" in evaluate and "service_healthy" in evaluate)
+
+    ignore = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+    check("the 1.4 GB dataset is never committed",
+          "data/raw/" in ignore and "data/*.json" in ignore)
+
+
 def test_state_store_is_available(spark):
     from src.streaming import job
     name = job.state_store_provider()
@@ -1239,6 +1282,7 @@ def main():
     test_benchmark_tools_are_wired()
     test_kafka_clients_use_only_known_settings()
     test_type_checking_survives_third_party_stubs()
+    test_real_data_tools_are_wired()
     test_test_dependencies_are_declared()
     spark = spark_session()
     spark.sparkContext.setLogLevel("ERROR")

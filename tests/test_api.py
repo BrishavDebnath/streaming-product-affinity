@@ -87,6 +87,21 @@ def test_empty_database_explains_itself_instead_of_erroring(client):
     assert graph.status_code == 200 and graph.json()["edge_count"] == 0
 
 
+def test_an_empty_lookback_is_not_the_same_as_no_data(api, client):
+    """After a replay stops, /trending is legitimately empty - but the
+    database is not. Saying "no data yet" there sends someone looking for a
+    broken pipeline."""
+    add_trending(api, LAPTOP, offset=90)            # an hour and a half ago
+
+    body = client.get("/trending?minutes=30").json()
+    assert body["count"] == 0
+    assert "No events in the last 30 minutes" in body["message"]
+    assert body["newest_window_age_minutes"] == pytest.approx(89, abs=2)
+
+    wider = client.get("/trending?minutes=240").json()
+    assert wider["count"] == 1 and "message" not in wider
+
+
 def test_removed_recommendations_path_is_gone(client):
     """The endpoint was renamed in Phase 1; nothing should still answer it."""
     assert client.get(f"/recommendations/{LAPTOP}").status_code == 404
@@ -207,6 +222,44 @@ def test_graph_hides_weak_pairs_too(api, client):
     assert client.get("/graph?min_pairs=1").json()["edge_count"] == 1
 
 
+def test_an_answer_from_outside_the_lookback_says_so(api, client):
+    """Widening to the whole retained history is a different answer to a
+    different question. Reporting it as a 30-minute lookback would be a lie
+    the caller cannot detect."""
+    add_pair(api, LAPTOP, SLEEVE, offset=600, count=20)      # ten hours ago
+    add_trending(api, LAPTOP, offset=600)
+
+    body = client.get(f"/related-products/{LAPTOP}").json()
+    assert body["source"] == "co_occurrence"
+    assert body["window"] == "all_retained"
+    assert body["lookback_minutes"] is None
+    assert [r["product_id"] for r in body["related_products"]] == [SLEEVE]
+
+    add_pair(api, LAPTOP, HUB, offset=1, count=5)            # a minute ago
+    fresh = client.get(f"/related-products/{LAPTOP}").json()
+    assert fresh["window"] == "recent"
+    assert fresh["lookback_minutes"] == config.PAIR_LOOKBACK_MINUTES
+    assert [r["product_id"] for r in fresh["related_products"]] == [HUB]
+
+
+def test_the_graph_uses_the_same_lookback_as_related_products(api, client):
+    """It summed every window ever written, so a graph next to a 30-minute
+    'trending' panel was quietly showing all-time affinity."""
+    add_pair(api, LAPTOP, SLEEVE, offset=600, count=20)      # ten hours ago
+    old = client.get("/graph").json()
+    assert old["window"] == "all_retained" and old["edge_count"] == 1
+    assert old["lookback_minutes"] is None
+
+    add_pair(api, PHONE, HUB, offset=1, count=20)            # a minute ago
+    recent = client.get("/graph").json()
+    assert recent["window"] == "recent"
+    assert {(e["source"], e["target"]) for e in recent["edges"]} == {(HUB, PHONE)}
+    assert recent["lookback_minutes"] == config.PAIR_LOOKBACK_MINUTES
+
+    wide = client.get("/graph?minutes=2000").json()
+    assert wide["edge_count"] == 2, "a caller can still ask for a wider window"
+
+
 # --------------------------------------------------- pipeline and telemetry
 def test_throughput_series_is_per_window(api, client):
     add_trending(api, LAPTOP, offset=2, events=60)
@@ -220,7 +273,13 @@ def test_throughput_series_is_per_window(api, client):
 
 
 def test_pipeline_reports_how_far_behind_the_last_write_was(api, client):
-    start = minute(1)
+    # Two minutes back, not one: with a one-minute offset the write time
+    # (window end + 4 s) lands in the FUTURE whenever the test starts in the
+    # first four seconds of a minute, so staleness came out negative and this
+    # test failed about one run in fifteen. Two minutes keeps the write in the
+    # past at every second of the clock while staying inside the 120-second
+    # window that counts as "ok".
+    start = minute(2)
     api._db[config.COLL_TRENDING].insert_one({
         "window_start": start, "window_end": start + timedelta(minutes=1),
         "product_id": LAPTOP, "event_count": 1, "score": 1.0,

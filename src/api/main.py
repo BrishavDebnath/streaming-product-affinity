@@ -113,6 +113,13 @@ def trending(limit: int = Query(default=config.DEFAULT_LIMIT, ge=1, le=100),
                    lambda: _trending_uncached(limit, minutes, latest))
 
 
+def _as_utc(value):
+    """MongoDB hands back naive datetimes; treat them as the UTC they are."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _trending_uncached(limit, minutes, latest):
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     pipeline: list[dict] = [
@@ -146,11 +153,25 @@ def _trending_uncached(limit, minutes, latest):
              "peak_users_per_window": d.get("peak_users_per_window"),
              "windows": d["windows"]} for d in agg]
 
-    return {"window_start": agg[0]["first_window"] if agg else None,
+    body = {"window_start": agg[0]["first_window"] if agg else None,
             "window_end": latest.get("window_end"),
             "minutes": minutes,
             "count": len(rows),
             "trending": catalog.enrich(rows)}
+    if not rows:
+        # Rows exist, just none inside the lookback - after a finished replay,
+        # or a producer that stopped. "No data yet" would be wrong: there is
+        # data, it is older than this question asks about.
+        newest = latest.get("window_end")
+        age = ((datetime.now(timezone.utc) - _as_utc(newest)).total_seconds() / 60
+               if newest else None)
+        body["message"] = (
+            f"No events in the last {minutes} minutes. The newest window "
+            f"ended {age:.0f} minutes ago."
+            if age is not None else
+            f"No events in the last {minutes} minutes.")
+        body["newest_window_age_minutes"] = round(age, 1) if age is not None else None
+    return body
 
 
 @app.get("/related-products/{product_id}")
@@ -185,9 +206,14 @@ def related_products(product_id: int,
         # top-`limit` by affinity is not the top-`limit` by lift.
         {"$limit": max(limit * 4, 20)},
     ]
+    window = "recent"
     try:
         agg = list(_db[config.COLL_PAIRS].aggregate(pipeline))
-        if not agg:      # nothing recent - fall back to the full history
+        if not agg:
+            # Nothing inside the lookback: widen to everything retained. This
+            # is a different answer to a different question, so the response
+            # says so rather than reporting a lookback it did not use.
+            window = "all_retained"
             pipeline[0] = {"$match": {"product_id": product_id}}
             agg = list(_db[config.COLL_PAIRS].aggregate(pipeline))
     except PyMongoError as exc:
@@ -202,7 +228,7 @@ def related_products(product_id: int,
                        "peak_users_per_window":
                            d.get("peak_users_per_window")} for d in agg]
 
-        counts, total = _product_counts(cutoff)
+        counts, total = _product_counts(cutoff if window == "recent" else None)
         ranked = scoring.score_pairs(candidates, counts, total,
                                      anchor_id=product_id, method=score_by)[:limit]
         rows = [{"product_id": r["related_product_id"],
@@ -213,7 +239,11 @@ def related_products(product_id: int,
         return {"product_id": product_id,
                 "source": "co_occurrence",
                 "ranked_by": score_by,
-                "lookback_minutes": config.PAIR_LOOKBACK_MINUTES,
+                "window": window,
+                # None when the lookback found nothing and the query was
+                # widened: claiming "30 minutes" there would be false.
+                "lookback_minutes": (config.PAIR_LOOKBACK_MINUTES
+                                     if window == "recent" else None),
                 "count": len(rows),
                 "related_products": catalog.enrich(rows)}
 
@@ -241,11 +271,16 @@ def _product_counts(cutoff):
     Per-product interaction counts and the grand total over the lookback
     window, read from the trending collection. These are the marginals that
     lift needs to divide popularity out of a raw co-occurrence count.
+
+    `cutoff` is None when the pairs came from the whole retained history:
+    dividing all-history pair counts by 30 minutes of marginals would produce
+    a lift that means nothing.
     """
     pipeline: list[dict] = [
-        {"$match": {"window_start": {"$gte": cutoff}}},
         {"$group": {"_id": "$product_id", "events": {"$sum": "$event_count"}}},
     ]
+    if cutoff is not None:
+        pipeline.insert(0, {"$match": {"window_start": {"$gte": cutoff}}})
     try:
         rows = list(_db[config.COLL_TRENDING].aggregate(pipeline))
     except PyMongoError:
@@ -354,16 +389,24 @@ def pipeline_health():
 @app.get("/graph")
 def graph(limit: int = Query(default=25, ge=1, le=200),
           min_affinity: float = Query(default=0.0, ge=0.0),
-          min_pairs: int = Query(default=config.MIN_PAIR_COUNT, ge=1)):
+          min_pairs: int = Query(default=config.MIN_PAIR_COUNT, ge=1),
+          minutes: int = Query(default=config.PAIR_LOOKBACK_MINUTES, ge=1)):
     """
     Co-occurrence as a node-link graph.
 
     Only canonical edges (product_id < related_product_id) are returned, so an
     undirected renderer draws each relationship once instead of twice.
+
+    Same lookback as /related-products, for the same reason: summing every
+    window ever written turns the graph into an all-time popularity chart.
+    When the lookback is empty the query widens to everything retained, and
+    the response says which of the two it is.
     """
     _COUNTERS["requests_total"] += 1
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    canonical = {"$expr": {"$lt": ["$product_id", "$related_product_id"]}}
     pipeline: list[dict] = [
-        {"$match": {"$expr": {"$lt": ["$product_id", "$related_product_id"]}}},
+        {"$match": {**canonical, "window_start": {"$gte": cutoff}}},
         {"$group": {"_id": {"a": "$product_id", "b": "$related_product_id"},
                     "affinity": {"$sum": "$affinity"},
                     "pair_count": {"$sum": "$pair_count"}}},
@@ -372,8 +415,13 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
         {"$sort": {"affinity": -1}},
         {"$limit": limit},
     ]
+    window = "recent"
     try:
         rows = list(_db[config.COLL_PAIRS].aggregate(pipeline))
+        if not rows:
+            window = "all_retained"
+            pipeline[0] = {"$match": canonical}
+            rows = list(_db[config.COLL_PAIRS].aggregate(pipeline))
     except PyMongoError as exc:
         _COUNTERS["errors_total"] += 1
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -396,6 +444,8 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
                       "category": product["category"] if product else "unknown",
                       "degree": degree})
     return {"nodes": nodes, "edges": edges,
+            "window": window,
+            "lookback_minutes": minutes if window == "recent" else None,
             "node_count": len(nodes), "edge_count": len(edges)}
 
 

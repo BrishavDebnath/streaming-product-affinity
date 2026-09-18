@@ -1,0 +1,40 @@
+# Dependency updates, weekly.
+#
+# Three ecosystems, because this project pins in three places: Python
+# requirements, the two Docker base images, and the GitHub Actions the
+# workflows call. Actions are pinned to commit SHAs (see ci.yml), which is the
+# safe way to depend on them - and unreadable to update by hand, so Dependabot
+# does it and CI proves the new SHA still works.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the test tooling rather than four; they move together.
+      dev-tooling:
+        patterns: ["pytest*", "mongomock", "httpx2", "ruff", "mypy"]
+    ignore:
+      # PySpark must match the Spark image the container runs (4.1.3); a
+      # bumped wheel here would mean the tests no longer prove anything about
+      # what actually runs. Raise it with the image, by hand.
+      - dependency-name: pyspark
+
+  - package-ecosystem: docker
+    directories:
+      - "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
