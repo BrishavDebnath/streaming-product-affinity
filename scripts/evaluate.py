@@ -26,7 +26,7 @@ import random
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -62,18 +62,17 @@ def day_of(epoch: float) -> str:
 def split(path: Path, train_days: float, test_days: float,
           start: str | None):
     """Training views (for the baseline) and the test period's visits."""
-    first = None
     train_views: Counter = Counter()
     test_events = []
     train_events = 0
+    # Day zero is the dataset's earliest event, found by scanning - not the
+    # first row, which in this export is seven weeks later. scripts/replay.py
+    # anchors the same way, so the training window here is the one replayed.
+    first, newest = rr.time_span(str(path))
     begin = (datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-             .timestamp() if start else None)
+             .timestamp() if start else first)
 
     for event in rr.read_events(str(path)):
-        if begin is None:
-            begin = event.at
-        if first is None:
-            first = event.at
         if event.at < begin:
             continue
         offset_days = (event.at - begin) / 86400
@@ -83,19 +82,21 @@ def split(path: Path, train_days: float, test_days: float,
                 train_views[event.item] += 1
         elif offset_days < train_days + test_days:
             test_events.append(event)
-        else:
-            break                      # the file is in time order
+        # No `break` here either: stopping at the first row past the window
+        # silently truncated the read on an out-of-order export, and with a
+        # 30-day window found no test traffic at all.
 
     visits = list(rr.sessionise(rr.sort_events(test_events)))
-    return train_views, train_events, visits, begin
+    return train_views, train_events, visits, begin, (first, newest)
 
 
 class ApiRecommender:
     """What a client actually gets: /related-products, fallback and all."""
 
-    def __init__(self, base_url: str, k: int):
+    def __init__(self, base_url: str, k: int, score_by: str = "affinity"):
         self.base_url = base_url.rstrip("/")
         self.k = k
+        self.score_by = score_by
         self.session = requests.Session()
         self.cache: dict[int, list[int]] = {}
         self.sources: Counter = Counter()
@@ -103,7 +104,8 @@ class ApiRecommender:
     def __call__(self, product_id: int) -> list[int]:
         if product_id in self.cache:
             return self.cache[product_id]
-        url = f"{self.base_url}/related-products/{product_id}?limit={self.k}"
+        url = (f"{self.base_url}/related-products/{product_id}"
+               f"?limit={self.k}&score_by={self.score_by}")
         try:
             response = self.session.get(url, timeout=10)
         except requests.RequestException as exc:
@@ -122,34 +124,81 @@ class ApiRecommender:
 
 
 class MongoRecommender:
-    """The pair table alone - no trending fallback, no cache, no HTTP."""
+    """The pair table alone - no trending fallback, no cache, no HTTP.
 
-    def __init__(self, k: int, lookback_minutes: int):
+    Mirrors the API's own widening: answer from the recent lookback where
+    there is something there, otherwise from everything still retained, and
+    count which of the two answered. Without that, this number depended on how
+    long after a replay the evaluation happened to run - a score that quietly
+    decays with the clock is not a measurement.
+    """
+
+    def __init__(self, k: int, lookback_minutes: int, widen: bool = True):
         from src.common import mongo
         self.db = mongo.client(config.MONGO_URI)[config.MONGO_DB]
         self.k = k
         self.lookback = lookback_minutes
+        self.widen = widen
         self.cache: dict[int, list[int]] = {}
         self.sources: Counter = Counter()
 
-    def __call__(self, product_id: int) -> list[int]:
-        if product_id in self.cache:
-            return self.cache[product_id]
-        cutoff = datetime.now(timezone.utc).timestamp() - self.lookback * 60
+    def _query(self, product_id: int, cutoff=None) -> list[int]:
+        match: dict = {"product_id": product_id}
+        if cutoff is not None:
+            match["window_start"] = {"$gte": cutoff}
         rows = self.db[config.COLL_PAIRS].aggregate([
-            {"$match": {"product_id": product_id,
-                        "window_start": {"$gte": datetime.fromtimestamp(
-                            cutoff, timezone.utc)}}},
+            {"$match": match},
             {"$group": {"_id": "$related_product_id",
                         "pair_count": {"$sum": "$pair_count"}}},
             {"$match": {"pair_count": {"$gte": config.MIN_PAIR_COUNT}}},
             {"$sort": {"pair_count": -1, "_id": 1}},
             {"$limit": self.k},
         ])
-        items = [row["_id"] for row in rows]
-        self.sources["co_occurrence" if items else "no_pairs"] += 1
+        return [row["_id"] for row in rows]
+
+    def __call__(self, product_id: int) -> list[int]:
+        if product_id in self.cache:
+            return self.cache[product_id]
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.lookback)
+        items = self._query(product_id, cutoff)
+        source = "co_occurrence_recent"
+        if not items and self.widen:
+            items = self._query(product_id)
+            source = "co_occurrence_retained"
+        if not items:
+            source = "no_pairs"
+        self.sources[source] += 1
         self.cache[product_id] = items
         return items
+
+
+def replayed_window():
+    """What the pipeline was last fed, as scripts/replay.py recorded it."""
+    try:
+        from src.common import mongo
+        db = mongo.client(config.MONGO_URI)[config.MONGO_DB]
+        return db["replay_runs"].find_one(sort=[("finished_at", -1)])
+    except Exception:                                   # noqa: BLE001
+        return None                                     # no record: cannot check
+
+
+def check_against_replay(run, start_day: str, train_days: float) -> str | None:
+    """The training window must be the window that was replayed.
+
+    Evaluating `--train-days 7` against a stack loaded with a 30-day replay
+    scores the pipeline on days it was trained on: measured here at 35.1%
+    against a truthful 17.4%. Nothing in the data reveals it, because the
+    pipeline's rows carry replay-clock timestamps rather than dataset dates.
+    """
+    if not run:
+        return None
+    if run.get("start_day") == start_day and float(run.get("days", 0)) == train_days:
+        return None
+    return (f"the pipeline holds a {run.get('days')}-day replay from "
+            f"{run.get('start_day')}, but this asks for {train_days:g} days "
+            f"from {start_day}. Testing on days the pipeline was trained on "
+            f"inflates the score; replay that window first, or pass "
+            f"--allow-window-mismatch to measure anyway.")
 
 
 def table(rows: list[tuple[str, str]]) -> str:
@@ -160,9 +209,9 @@ def table(rows: list[tuple[str, str]]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events", type=Path, default=RAW / "events.csv")
-    parser.add_argument("--train-days", type=float, default=7.0,
-                        help="must match the replay's --days")
-    parser.add_argument("--test-days", type=float, default=1.0)
+    parser.add_argument("--train-days", type=float, default=30.0,
+                        help="must match the replay's --days; the evaluation\n     reads the manifest replay.py wrote and refuses any other window")
+    parser.add_argument("--test-days", type=float, default=7.0)
     parser.add_argument("--start", type=str, default=None,
                         help="first training day, YYYY-MM-DD (must match the replay)")
     parser.add_argument("--k", type=int, default=10)
@@ -170,6 +219,17 @@ def main() -> int:
                         help="sample this many test cases (0 = all)")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--source", choices=["api", "mongo"], default="api")
+    parser.add_argument("--score-by", choices=["affinity", "lift", "pmi"],
+                        default="affinity",
+                        help="how the API should rank co-occurring products")
+    parser.add_argument("--allow-window-mismatch", action="store_true",
+                        help="evaluate even when the training window is not "
+                             "the one that was replayed (the result will "
+                             "include data the pipeline was trained on)")
+    parser.add_argument("--strict-lookback", action="store_true",
+                        help="with --source mongo, answer only from the recent "
+                             "lookback instead of widening to everything "
+                             "retained when it is empty")
     parser.add_argument("--no-report", action="store_true")
     args = parser.parse_args()
 
@@ -180,11 +240,26 @@ def main() -> int:
     started = time.time()
     log.info("splitting %s: %s training days, %s test days",
              args.events, args.train_days, args.test_days)
-    train_views, train_events, visits, begin = split(
+    train_views, train_events, visits, begin, (first, newest) = split(
         args.events, args.train_days, args.test_days, args.start)
+    log.info("dataset spans %s to %s; training from %s for %g days, testing "
+             "the %g days after that",
+             day_of(first), day_of(newest), day_of(begin), args.train_days,
+             args.test_days)
     if not visits:
-        log.error("no test traffic in that window - is --start/--train-days right?")
+        log.error("no test traffic between day %g and day %g after %s. The "
+                  "dataset ends on %s - ask for fewer days, or move --start.",
+                  args.train_days, args.train_days + args.test_days,
+                  day_of(begin), day_of(newest))
         return 1
+
+    problem = check_against_replay(replayed_window(), day_of(begin),
+                                   args.train_days)
+    if problem and not args.allow_window_mismatch:
+        log.error("%s", problem)
+        return 2
+    if problem:
+        log.warning("MEASURING ANYWAY: %s", problem)
 
     cases = ev.test_cases(visits)
     if args.limit and len(cases) > args.limit:
@@ -198,9 +273,10 @@ def main() -> int:
     baseline = ev.evaluate(f"bestsellers (top {args.k} of the training days)",
                            cases, lambda _product: top, args.k)
 
-    recommender = (ApiRecommender(config.API_BASE_URL, args.k)
+    recommender = (ApiRecommender(config.API_BASE_URL, args.k, args.score_by)
                    if args.source == "api"
-                   else MongoRecommender(args.k, config.PAIR_LOOKBACK_MINUTES))
+                   else MongoRecommender(args.k, config.PAIR_LOOKBACK_MINUTES,
+                                         widen=not args.strict_lookback))
     model = ev.evaluate(f"pipeline ({args.source})", cases, recommender, args.k)
     ratio = ev.lift(model, baseline)
 
@@ -242,6 +318,7 @@ def main() -> int:
         "dataset": "retailrocket",
         "train_days": args.train_days, "test_days": args.test_days,
         "train_start": day_of(begin), "k": args.k, "source": args.source,
+        "score_by": args.score_by if args.source == "api" else "pair_count",
         "cases": model.cases,
         "pipeline": {"hit_rate": model.hit_rate, "hits": model.hits,
                      "any_hit_rate": model.any_hit_rate,

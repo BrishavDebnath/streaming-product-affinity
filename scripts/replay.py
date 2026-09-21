@@ -2,8 +2,8 @@
 """
 Replay real RetailRocket traffic through Kafka.
 
-    python scripts/replay.py --days 7                 # a week, in ~5 minutes
-    python scripts/replay.py --days 7 --minutes 10    # slower, more realistic
+    python scripts/replay.py --days 30                # a month, in ~10 minutes
+    python scripts/replay.py --days 7 --minutes 10    # a week, slower and more realistic
     python scripts/replay.py --days 1 --dry-run       # parse only, send nothing
 
 What it does, in order: read the slice, cut it into visits at a 30-minute
@@ -55,6 +55,10 @@ CO_VIEW_GAP_SECONDS = 120
 FLUSH_PRODUCT = -1
 FLUSH_MINUTES = 10
 
+# Where a finished replay records what it covered, for scripts/evaluate.py to
+# check its training window against.
+REPLAY_RUNS = "replay_runs"
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-8s replay | %(message)s")
 log = logging.getLogger("replay")
@@ -78,24 +82,26 @@ def day_of(epoch: float) -> str:
 
 
 def load_slice(path: Path, start: float | None, days: float, limit: int):
-    """Events inside the window, and where the dataset itself starts."""
+    """Events inside the window, and the dataset's own span.
+
+    Day zero is the dataset's EARLIEST event, found by scanning the file
+    first. Using the first row instead - which is what this did - anchors the
+    window on wherever the export happens to begin: here that is 2015-06-02,
+    seven weeks after the earliest event, and a single out-of-order row from
+    the future would anchor it on nothing usable at all.
+    """
+    dataset_start, dataset_end = rr.time_span(str(path))
+    if start is None:
+        start = dataset_start
+    end = start + days * 86400
     events = []
-    dataset_start = None
-    end = None
     for event in rr.read_events(str(path)):
-        if dataset_start is None or event.at < dataset_start:
-            dataset_start = event.at
-        if start is None:
-            start = dataset_start
-            end = start + days * 86400
-        if event.at < start:
-            continue
-        if end is not None and event.at >= end:
+        if event.at < start or event.at >= end:
             continue
         events.append(event)
         if limit and len(events) >= limit:
             break
-    return events, dataset_start
+    return events, (dataset_start, dataset_end)
 
 
 def visits_of(events):
@@ -167,6 +173,29 @@ def flush_windows(producer, after: float) -> int:
     log.info("sent %s watermark events (product %s), reaching %s minutes past "
              "the replay", FLUSH_MINUTES, FLUSH_PRODUCT, FLUSH_MINUTES)
     return FLUSH_MINUTES
+
+
+def record_run(start: float, days: float, events: int, speedup: float) -> None:
+    """Write down what was replayed, so the evaluation can check itself.
+
+    Without this, `evaluate.py --train-days 7` against a stack loaded with a
+    30-day replay scores the pipeline on days it was trained on and reports a
+    number twice as good as the truth. The evaluation cannot detect that from
+    the data alone: the pipeline's rows carry replay-clock timestamps, not
+    dataset dates.
+    """
+    from src.common import mongo
+
+    db = mongo.client(config.MONGO_URI)[config.MONGO_DB]
+    db[REPLAY_RUNS].insert_one({
+        "dataset": "retailrocket",
+        "start_day": day_of(start),
+        "days": days,
+        "events": events,
+        "speedup": round(speedup, 1),
+        "finished_at": datetime.now(timezone.utc),
+    })
+    log.info("recorded the run: %g days from %s", days, day_of(start))
 
 
 def clear_flush_rows(timeout: float = 240.0) -> int:
@@ -277,10 +306,14 @@ def main() -> int:
 
     log.info("reading %s", args.events)
     start = parse_day(args.start) if args.start else None
-    events, dataset_start = load_slice(args.events, start, args.days, args.limit)
+    events, (dataset_start, dataset_end) = load_slice(
+        args.events, start, args.days, args.limit)
+    log.info("dataset spans %s to %s", day_of(dataset_start), day_of(dataset_end))
     if not events:
-        log.error("the slice is empty; the dataset starts on %s",
-                  day_of(dataset_start) if dataset_start else "an unknown day")
+        log.error("the slice is empty: %g days from %s, but the dataset runs "
+                  "%s to %s", args.days,
+                  day_of(start if start else dataset_start),
+                  day_of(dataset_start), day_of(dataset_end))
         return 1
 
     visits = visits_of(events)
@@ -306,6 +339,8 @@ def main() -> int:
 
     rows = wire_events(visits, clock)
     sent = send(rows, args.dry_run, flush=not args.no_flush)
+    if sent and not args.dry_run:
+        record_run(min(e.at for e in events), args.days, sent, speedup)
     if sent and not args.no_flush and not args.keep_flush_rows:
         clear_flush_rows()
     if sent and not args.dry_run:

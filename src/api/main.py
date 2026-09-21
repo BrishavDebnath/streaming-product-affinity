@@ -38,15 +38,19 @@ _db = _client[config.MONGO_DB]
 _CACHE: dict[str, tuple] = {}
 
 
-def _cached(key: str, builder):
+def _cached(key: str, builder, ttl: float | None = None):
     """
     Tiny read-through cache. The underlying aggregates only change once per
     trigger interval, so recomputing a Mongo aggregation on every request is
     wasted work - and under load the API, not Spark, becomes the bottleneck.
+
+    `ttl` overrides the default for queries that are far more expensive than
+    the rest: the graph groups every pair row in the lookback, which on a
+    replayed month is over a million of them and takes seconds.
     """
     now = time.time()
     hit = _CACHE.get(key)
-    if hit and now - hit[0] < config.CACHE_TTL_SECONDS:
+    if hit and now - hit[0] < (config.CACHE_TTL_SECONDS if ttl is None else ttl):
         _COUNTERS["cache_hits"] += 1
         return hit[1]
     value = builder()
@@ -111,6 +115,19 @@ def trending(limit: int = Query(default=config.DEFAULT_LIMIT, ge=1, le=100),
     # only the newest one, so a lull in traffic does not empty the display.
     return _cached(f"trending:{limit}:{minutes}",
                    lambda: _trending_uncached(limit, minutes, latest))
+
+
+def _newest_window(collection, match: dict | None = None):
+    """The newest `window_start` in a collection, optionally for one filter.
+
+    Used to anchor a lookback on the DATA rather than on the clock. Dropping
+    the time filter entirely was the obvious alternative and the wrong one: on
+    1.5M pair rows it means a full scan and a group, which took longer than
+    the dashboard's timeout and rendered as "no pairs yet".
+    """
+    row = _db[collection].find_one(match or {}, {"window_start": 1},
+                                   sort=[("window_start", DESCENDING)])
+    return _as_utc(row["window_start"]) if row and row.get("window_start") else None
 
 
 def _as_utc(value):
@@ -206,16 +223,21 @@ def related_products(product_id: int,
         # top-`limit` by affinity is not the top-`limit` by lift.
         {"$limit": max(limit * 4, 20)},
     ]
-    window = "recent"
+    window, as_of = "recent", None
     try:
         agg = list(_db[config.COLL_PAIRS].aggregate(pipeline))
         if not agg:
-            # Nothing inside the lookback: widen to everything retained. This
-            # is a different answer to a different question, so the response
-            # says so rather than reporting a lookback it did not use.
-            window = "all_retained"
-            pipeline[0] = {"$match": {"product_id": product_id}}
-            agg = list(_db[config.COLL_PAIRS].aggregate(pipeline))
+            # Nothing inside the lookback - a finished replay, or a producer
+            # that stopped. Rather than dropping the time filter (which turns
+            # the answer into an all-time popularity chart), anchor the same
+            # lookback on the newest data this product has.
+            as_of = _newest_window(config.COLL_PAIRS, {"product_id": product_id})
+            if as_of is not None:
+                window = "latest_available"
+                cutoff = as_of - timedelta(minutes=config.PAIR_LOOKBACK_MINUTES)
+                pipeline[0] = {"$match": {"product_id": product_id,
+                                          "window_start": {"$gte": cutoff}}}
+                agg = list(_db[config.COLL_PAIRS].aggregate(pipeline))
     except PyMongoError as exc:
         _COUNTERS["errors_total"] += 1
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -228,7 +250,7 @@ def related_products(product_id: int,
                        "peak_users_per_window":
                            d.get("peak_users_per_window")} for d in agg]
 
-        counts, total = _product_counts(cutoff if window == "recent" else None)
+        counts, total = _product_counts(cutoff)
         ranked = scoring.score_pairs(candidates, counts, total,
                                      anchor_id=product_id, method=score_by)[:limit]
         rows = [{"product_id": r["related_product_id"],
@@ -240,10 +262,10 @@ def related_products(product_id: int,
                 "source": "co_occurrence",
                 "ranked_by": score_by,
                 "window": window,
-                # None when the lookback found nothing and the query was
-                # widened: claiming "30 minutes" there would be false.
-                "lookback_minutes": (config.PAIR_LOOKBACK_MINUTES
-                                     if window == "recent" else None),
+                "lookback_minutes": config.PAIR_LOOKBACK_MINUTES,
+                # Set when the lookback was anchored on the newest data
+                # instead of on now: the caller can see how old the answer is.
+                "as_of": as_of,
                 "count": len(rows),
                 "related_products": catalog.enrich(rows)}
 
@@ -403,10 +425,17 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
     the response says which of the two it is.
     """
     _COUNTERS["requests_total"] += 1
+    return _cached(f"graph:{limit}:{min_affinity}:{min_pairs}:{minutes}",
+                   lambda: _graph_uncached(limit, min_affinity, min_pairs, minutes),
+                   ttl=config.GRAPH_CACHE_SECONDS)
+
+
+def _graph_uncached(limit: int, min_affinity: float, min_pairs: int,
+                    minutes: int):
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     canonical = {"$expr": {"$lt": ["$product_id", "$related_product_id"]}}
     pipeline: list[dict] = [
-        {"$match": {**canonical, "window_start": {"$gte": cutoff}}},
+        {"$match": {**canonical, "window_start": {"$gte": cutoff}}},          # noqa: E501
         {"$group": {"_id": {"a": "$product_id", "b": "$related_product_id"},
                     "affinity": {"$sum": "$affinity"},
                     "pair_count": {"$sum": "$pair_count"}}},
@@ -415,13 +444,21 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
         {"$sort": {"affinity": -1}},
         {"$limit": limit},
     ]
-    window = "recent"
+    window, as_of = "recent", None
     try:
         rows = list(_db[config.COLL_PAIRS].aggregate(pipeline))
         if not rows:
-            window = "all_retained"
-            pipeline[0] = {"$match": canonical}
-            rows = list(_db[config.COLL_PAIRS].aggregate(pipeline))
+            # Anchor the same lookback on the newest data rather than dropping
+            # the filter: without a time bound this groups every pair row still
+            # retained - 1.5M of them after a 30-day replay - which took longer
+            # than the dashboard's timeout and rendered as "no pairs yet".
+            as_of = _newest_window(config.COLL_PAIRS)
+            if as_of is not None:
+                window = "latest_available"
+                pipeline[0] = {"$match": {
+                    **canonical,
+                    "window_start": {"$gte": as_of - timedelta(minutes=minutes)}}}
+                rows = list(_db[config.COLL_PAIRS].aggregate(pipeline))
     except PyMongoError as exc:
         _COUNTERS["errors_total"] += 1
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -445,7 +482,8 @@ def graph(limit: int = Query(default=25, ge=1, le=200),
                       "degree": degree})
     return {"nodes": nodes, "edges": edges,
             "window": window,
-            "lookback_minutes": minutes if window == "recent" else None,
+            "lookback_minutes": minutes,
+            "as_of": as_of,
             "node_count": len(nodes), "edge_count": len(edges)}
 
 

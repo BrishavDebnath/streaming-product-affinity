@@ -393,6 +393,81 @@ def test_the_evaluation_runs_end_to_end_against_a_pair_table(tmp_path,
     assert "hit-rate@10" in report.read_text(encoding="utf-8")
 
 
+def test_an_out_of_order_export_does_not_truncate_the_split(tmp_path):
+    """RetailRocket's events.csv is not in time order - its first row is
+    2015-06-02 while its earliest event is 2015-05-03. Stopping at the first
+    row past the window (which looks safe on a sorted file) silently threw
+    away the rest of the read, and with a 30-day window found no test traffic
+    at all."""
+    import csv
+
+    script = load_script("evaluate.py")
+    day = 86_400
+    start = 1_430_622_000
+    rows = [
+        # A row from far in the future, first in the file - the shape that
+        # broke it.
+        {"timestamp": (start + 90 * day) * 1000, "visitorid": 1,
+         "event": "view", "itemid": 999, "transactionid": ""},
+    ]
+    for visitor in range(40):                       # training days
+        for offset, item in ((0, 500), (30, 600)):
+            rows.append({"timestamp": (start + visitor * 60 + offset) * 1000,
+                         "visitorid": 100 + visitor, "event": "view",
+                         "itemid": item, "transactionid": ""})
+    for visitor in range(40):                       # the test day, later
+        for offset, item in ((0, 500), (30, 600)):
+            rows.append({"timestamp": (start + 2 * day + visitor + offset) * 1000,
+                         "visitorid": 200 + visitor, "event": "view",
+                         "itemid": item, "transactionid": ""})
+
+    events_csv = tmp_path / "events.csv"
+    with open(events_csv, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=rr.EVENT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    train_views, train_events, visits, begin, (first, newest) = script.split(
+        str(events_csv), train_days=2, test_days=1, start=None)
+    assert visits, "the test window must survive an out-of-order first row"
+    assert train_events == 80
+    assert newest > first, "the reported span covers the whole file"
+
+
+def test_the_mongo_source_does_not_decay_with_the_clock(monkeypatch):
+    """A replay's windows age out of the lookback within the hour. If the
+    pair-table reader answered only from the recent window, the same data
+    would score 7.9% at one moment and 0% twenty minutes later - a number
+    that depends on when you ran it is not a measurement."""
+    from datetime import datetime, timedelta, timezone
+
+    import mongomock
+
+    from src.common import config, mongo
+
+    script = load_script("evaluate.py")
+    client = mongomock.MongoClient()
+    db = client[config.MONGO_DB]
+    old_window = datetime.now(timezone.utc) - timedelta(hours=5)
+    for first, second in ((10, 20), (20, 10)):
+        db[config.COLL_PAIRS].insert_one({
+            "window_start": old_window,
+            "window_end": old_window + timedelta(minutes=1),
+            "product_id": first, "related_product_id": second,
+            "pair_count": 50, "affinity": 150.0, "unique_users": 9,
+            "_updated_at": old_window})
+    monkeypatch.setattr(mongo, "client", lambda _uri: client)
+
+    widening = script.MongoRecommender(10, config.PAIR_LOOKBACK_MINUTES)
+    assert widening(10) == [20]
+    assert widening.sources["co_occurrence_retained"] == 1
+
+    strict = script.MongoRecommender(10, config.PAIR_LOOKBACK_MINUTES,
+                                     widen=False)
+    assert strict(10) == [], "--strict-lookback still answers only from recent"
+    assert strict.sources["no_pairs"] == 1
+
+
 def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
                                                               monkeypatch,
                                                               caplog):
@@ -455,3 +530,114 @@ def test_the_scripts_exist_and_say_how_they_are_run():
     assert "kaggle.json" in fetch and "replay.py" in fetch
     assert "--days" in replay and "CATALOG_FILE" in replay
     assert "--train-days" in evaluate and "bestseller" in evaluate.lower()
+
+
+# --- the replay manifest -----------------------------------------------------
+#
+# Nothing in the pipeline's own rows says which days it was fed: they carry
+# replay-clock timestamps, not dataset dates. So the replay writes down what it
+# sent and the evaluation checks the answer against it.
+
+def test_a_training_window_that_matches_the_replay_passes():
+    script = load_script("evaluate.py")
+    run = {"start_day": "2015-05-03", "days": 30.0, "events": 617_109}
+    assert script.check_against_replay(run, "2015-05-03", 30.0) is None
+
+
+def test_testing_on_days_the_pipeline_was_trained_on_is_refused():
+    """The measured cost of missing this: 35.1% against a truthful 17.4%.
+
+    A 30-day replay followed by `--train-days 7 --test-days 7` puts days 7-14
+    in the test set AND in the pipeline, so the model is asked about visits it
+    has already seen.
+    """
+    script = load_script("evaluate.py")
+    run = {"start_day": "2015-05-03", "days": 30.0, "events": 617_109}
+    problem = script.check_against_replay(run, "2015-05-03", 7.0)
+    assert problem and "30" in problem and "7 days" in problem
+    assert "--allow-window-mismatch" in problem, "say how to override it"
+
+    # A different start day is the same mistake seen from the other side.
+    assert script.check_against_replay(run, "2015-06-02", 30.0) is not None
+
+
+def test_no_manifest_means_no_check():
+    """Older stacks, and anyone driving the pipeline by hand, have no record.
+    Refusing to measure at all would be worse than measuring unguarded."""
+    script = load_script("evaluate.py")
+    assert script.check_against_replay(None, "2015-05-03", 7.0) is None
+
+
+def test_the_replay_records_what_it_sent(monkeypatch):
+    import mongomock
+
+    from src.common import config, mongo
+
+    replay = load_script("replay.py")
+    client = mongomock.MongoClient()
+    monkeypatch.setattr(mongo, "client", lambda _uri: client)
+    replay.record_run(start=1_430_622_000.0, days=30.0, events=617_109,
+                      speedup=2016.0)
+
+    run = client[config.MONGO_DB][replay.REPLAY_RUNS].find_one()
+    assert run["start_day"] == "2015-05-03" and run["days"] == 30.0
+    assert run["events"] == 617_109 and run["dataset"] == "retailrocket"
+    # The evaluation reads this document, so the two have to agree on shape.
+    script = load_script("evaluate.py")
+    assert script.check_against_replay(run, "2015-05-03", 30.0) is None
+
+
+def test_a_leaking_evaluation_stops_before_it_prints_a_number(tmp_path,
+                                                              monkeypatch,
+                                                              caplog):
+    """End to end: a mismatched manifest exits 2 and writes no report."""
+    import csv
+    import sys
+    from datetime import datetime, timezone
+
+    import mongomock
+
+    from src.common import config, mongo
+
+    day = 86_400
+    start = 1_430_622_000
+    rows = []
+    for visitor in range(200):
+        for offset, item in ((0, 500), (30, 600)):
+            rows.append({"timestamp": (start + visitor * 60 + offset) * 1000,
+                         "visitorid": visitor, "event": "view",
+                         "itemid": item, "transactionid": ""})
+    for visitor in range(1000, 1100):
+        for offset, item in ((0, 500), (30, 600)):
+            rows.append({"timestamp": (start + 2 * day + visitor + offset) * 1000,
+                         "visitorid": visitor, "event": "view",
+                         "itemid": item, "transactionid": ""})
+    events_csv = tmp_path / "events.csv"
+    with open(events_csv, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=rr.EVENT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    client = mongomock.MongoClient()
+    client[config.MONGO_DB]["replay_runs"].insert_one({
+        "dataset": "retailrocket", "start_day": "2015-05-03", "days": 10.0,
+        "events": 1_000, "speedup": 2016.0,
+        "finished_at": datetime.now(timezone.utc)})
+    monkeypatch.setattr(mongo, "client", lambda _uri: client)
+
+    script = load_script("evaluate.py")
+    monkeypatch.setattr(script, "REPORT", tmp_path / "EVALUATION.md")
+    monkeypatch.setattr(script, "RESULTS", tmp_path / "results")
+    argv = ["evaluate.py", "--events", str(events_csv), "--train-days", "2",
+            "--test-days", "1", "--source", "mongo"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with caplog.at_level("ERROR"):
+        assert script.main() == 2, "a 10-day replay cannot answer a 2-day split"
+    assert not (tmp_path / "EVALUATION.md").exists()
+    assert "10" in caplog.text
+
+    # ...and the override still measures, because sometimes you know better.
+    monkeypatch.setattr(sys, "argv", argv + ["--allow-window-mismatch"])
+    assert script.main() == 0
+    assert (tmp_path / "EVALUATION.md").exists()

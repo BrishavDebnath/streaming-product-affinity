@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 114 tests (Spark, API, dashboard, real data), plus CI on every push |
+| No tests | 123 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503 rather than 500.
 - `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all four groups (114 tests); the Spark group still runs as a
+- `pytest` runs all four groups (123 tests); the Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -814,3 +814,103 @@ of a minute, making staleness negative and the assertion fail. It had been
 passing by luck. **Changed:** the window is two minutes old, so the write time
 is in the past at every second of the clock while still inside the 120-second
 freshness threshold. Run repeatedly to confirm.
+
+### 81. The pair-table score decayed with the clock
+`--source mongo` answered only from the recent lookback, so the same data
+scored 7.9% twenty minutes after a replay and 0% an hour after it - the
+measurement depended on when it was run, which makes it not a measurement.
+**Changed:** it now mirrors what the API does, answering from the lookback
+where there is something there and widening to everything retained when there
+is not, and it counts which of the two answered
+(`co_occurrence_recent` / `co_occurrence_retained`). `--strict-lookback`
+keeps the old behaviour for anyone who wants only the live window. A test
+scores five-hour-old pairs both ways.
+
+### 82. "Day zero" was wherever the export happened to begin
+The 30-day evaluation failed with "no test traffic in that window", and the
+cause was two assumptions that RetailRocket's export does not honour: its rows
+are **not in time order**, and its first row is 2015-06-02 while its earliest
+event is 2015-05-03, seven weeks earlier.
+- `split()` treated the first row as day zero, so seven weeks of May traffic
+  were skipped as "before the window".
+- It also stopped reading at the first row past the requested window. On a
+  sorted file that is an optimisation; on this one it truncated the read, and
+  at 30 days it stopped before reaching any test traffic at all.
+**Changed:** both `scripts/evaluate.py` and `scripts/replay.py` now take day
+zero from the dataset's earliest event (`retailrocket.time_span`, one scan),
+neither stops early, and both log the span they found and the window they are
+using. A test builds an export whose first row is 90 days in the future and
+asserts the split still finds its test traffic.
+
+The 7-day numbers already published were measured with the old anchor, so
+they describe 2015-06-02 onwards rather than the dataset's first week. They
+are being re-measured rather than reinterpreted.
+
+### 83. The widened window did not survive a real dataset
+The graph went blank after the 30-day replay: 1.5M pair rows, and the
+"widen to everything retained" path I had added grouped all of them with no
+time filter and no index to help, taking longer than the dashboard's
+five-second timeout - which the page reported, correctly but uselessly, as
+"No product pairs yet".
+**Changed:** when the recent lookback is empty, both `/graph` and
+`/related-products` now anchor the SAME lookback on the newest data that
+exists (`window: "latest_available"`, with `as_of` so the caller sees how old
+it is) instead of dropping the time bound. That uses the `window_start` index,
+bounds the scan to one lookback's worth of rows, and answers a meaningful
+question - "the most recent 30 minutes of data there is" - rather than an
+all-time popularity chart. A test proves rows outside that band stay out.
+
+### 84. The graph query outran the dashboard's timeout
+Measured, not guessed: `/graph` took **5.1-6.4 seconds** against a replayed
+month, and the dashboard gave it five. So `requests.get` aborted, the page
+fell through to "No product pairs yet", and a database holding 1.24M pair rows
+looked empty. The endpoint itself was fine - the same query returned real
+edges when asked directly.
+
+The cost is inherent: the graph groups every pair row inside the lookback, and
+a replay compresses a month into ten minutes of pipeline time, so the whole
+month sits inside one 30-minute window. **Changed:** the API caches the graph
+for `GRAPH_CACHE_SECONDS` (30 by default, its own TTL because it is far more
+expensive than the other reads), and the dashboard gives that one call thirty
+seconds with a spinner instead of five seconds and a misleading message. Two
+tests: one asserts the caching, one asserts a different question is a
+different cache entry.
+
+### 85. The evaluation could score the pipeline on its own training days
+The worst defect in the project so far, because it produced a *better* number
+rather than an error. `scripts/evaluate.py --train-days 7 --test-days 7` split
+the dataset at day 7 and tested on days 7-14 - while the running pipeline held
+a **30-day** replay. Days 7-14 were therefore in the test set *and* in the
+pipeline's pair table. It reported **35.100% hit-rate@10, 81x the baseline,
+100% coverage**; measured honestly on unseen days the same pipeline scores
+**17.433%**. A doubled score, from a command that looked entirely reasonable.
+
+Nothing in the data could reveal it. The pipeline's rows carry replay-clock
+timestamps - the wall clock of the machine at replay time - not dataset dates,
+so no query on `product_pairs` can tell you which days of 2015 produced them.
+The split lives in `evaluate.py`; the load lives in `replay.py`; neither knew
+what the other had done.
+
+**Changed:** the replay now writes a manifest. After a successful send,
+`record_run()` inserts `{dataset, start_day, days, events, speedup,
+finished_at}` into `replay_runs`, and the evaluation reads the latest one
+before it builds a single test case. If the training window it was asked for
+is not the window that was replayed, it names both and exits 2:
+
+    the pipeline holds a 30-day replay from 2015-05-03, but this asks for
+    7 days from 2015-05-03. Testing on days the pipeline was trained on
+    inflates the score; replay that window first, or pass
+    --allow-window-mismatch to measure anyway.
+
+`--allow-window-mismatch` still measures, loudly, for the case where you do
+know better. A missing manifest is not an error - older stacks and hand-driven
+pipelines have none, and refusing to measure at all would be worse than
+measuring unguarded.
+
+Five tests: a matching window passes, a mismatched window and a mismatched
+start day are both caught, the replay's record and the evaluation's reader
+agree on shape, and end to end a leaking run exits 2 and writes no report
+while the override writes one.
+
+**The 35.1% figure is withdrawn.** It appears nowhere in the README or in
+`docs/EVALUATION.md`; the published numbers are the 30-day ones below.

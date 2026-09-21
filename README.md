@@ -283,9 +283,13 @@ and a half months.
 ```bash
 pip install -r requirements-data.txt
 python scripts/fetch_dataset.py          # needs a Kaggle legacy API key
-docker compose run --rm replay --days 7  # a week of real traffic, in ~5 minutes
-docker compose run --rm evaluate --train-days 7 --test-days 7
+docker compose run --rm replay --days 30  # a month of real traffic, in ~10 minutes
+docker compose run --rm evaluate --train-days 30 --test-days 7
 ```
+
+`--train-days` must match the replay's `--days`: the evaluation reads the
+manifest the replay wrote and refuses any other window, because testing on
+days the pipeline was trained on inflates the score instead of erroring.
 
 Three things have to happen for real data to work here, and each one is a
 decision rather than a detail ([ADR 0011](docs/adr/0011-real-data-and-evaluation.md)):
@@ -318,21 +322,29 @@ most-viewed products of the training period — what a shop does with no
 recommender at all. Both get identical test cases, and the pipeline's answers
 come from the live `/related-products` endpoint, not a re-implementation.
 
-**Measured**, on 3,000 held-out visits: one week of RetailRocket traffic
-(144,671 events) replayed through Kafka, tested on the following week.
+**Measured**, on 3,000 held-out visits: 30 days of RetailRocket traffic
+(617,109 events) replayed through Kafka, tested on the following 7 days.
 
 | | hit-rate@10 | Coverage | vs baseline |
 |---|---:|---:|---:|
-| **Pipeline**, as the API serves it | **9.13%** | 73% | **12.5x** |
-| Pipeline, co-occurrence only (no fallback) | 7.90% | 33% | 10.8x |
-| Bestsellers (top 10 of the training week) | 0.73% | 100% | — |
+| **Pipeline**, co-occurrence only | **19.7%** | 64% | **26.9x** |
+| Pipeline, as the API serves it (with fallback) | 17.4% | 89% | 23.8x |
+| Bestsellers (top 10 of the training month) | 0.73% | 100% | — |
 
 Coverage — the share of queries that got a real co-occurrence answer rather
 than the trending fallback — is reported next to the hit-rate, because an
-average that hides it is not an honest number. The figure is conservative:
-796 of the 3,000 query products had never appeared in the training week, and
-every one counts as a miss for the pipeline while the bestseller list still
-answers. Details, and what the number does not claim, in
+average that hides it is not an honest number. The two pipeline rows are a
+precision/coverage trade, not a ranking: the model itself is worth 19.7% on
+the 64% of queries it can answer, and the product is worth 17.4% because it
+answers 89% of them. The figure is conservative either way — 1,068 of the
+3,000 query products had no pairs in the training month at all, and every one
+counts as a miss for the pipeline while the bestseller list still answers.
+
+Evaluating a different window than the one replayed would score the pipeline
+on its own training days: `scripts/replay.py` records what it sent and
+`scripts/evaluate.py` refuses the mismatch, because that mistake reads as a
+**35.1%** hit-rate rather than an error ([defect 85](DEFECTS_FIXED.md)).
+Details, and what the number does not claim, in
 [docs/EVALUATION.md](docs/EVALUATION.md); the raw run is in
 `results/evaluation.json` (written locally; `results/` is git-ignored).
 
@@ -380,7 +392,7 @@ the measurements are taken this way.
 
 ## Tested
 
-**114 tests, no Kafka and no MongoDB needed**, in four groups:
+**123 tests, no Kafka and no MongoDB needed**, in four groups:
 
 | What | How | Where it runs |
 |---|---|---|
@@ -452,10 +464,12 @@ ruff check . && mypy        # the same lint and type checks CI runs: make lint
 | `GET /related-products/{id}?limit=&score_by=` | co-viewed products ranked by `affinity`, `lift` or `pmi`, with trending fallback |
 
 **Three answers, not two.** `/related-products` and `/graph` answer from the
-recent lookback where they can; when that window is empty they widen to
-everything still retained and say so (`"window": "all_retained"`,
-`"lookback_minutes": null`); only with no pairs at all does
-`/related-products` fall back to trending. `/trending` never widens - it
+recent lookback where they can; when that window is empty they apply the same
+lookback to the newest data that exists and say so (`"window":
+"latest_available"`, with `as_of` giving its age) rather than dropping the
+time bound, which on 1.5M pair rows means an unindexed scan and an all-time
+popularity chart; only with no pairs at all does `/related-products` fall back
+to trending. `/trending` never widens - it
 reports the last N minutes and, when those are empty, says how old the newest
 window is.
 | `GET /stats` | collection counts, latest window, request counters |

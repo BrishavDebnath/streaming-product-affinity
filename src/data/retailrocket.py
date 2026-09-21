@@ -93,6 +93,24 @@ def read_events(path: str) -> Iterator[Event]:
         yield from parse_rows(reader)
 
 
+def time_span(path: str) -> tuple[float, float]:
+    """The earliest and latest event in the file.
+
+    One scan, because the export is NOT in time order: RetailRocket's
+    events.csv begins with 2015-06-02 while its earliest event is 2015-05-03.
+    Taking the first row as "day zero" - which is what both scripts used to do
+    - anchors every window on an arbitrary row, and a single out-of-order row
+    from the future anchors them on nothing at all.
+    """
+    first = last = None
+    for event in read_events(path):
+        first = event.at if first is None else min(first, event.at)
+        last = event.at if last is None else max(last, event.at)
+    if first is None or last is None:
+        raise ValueError(f"{path} contains no usable events")
+    return first, last
+
+
 def session_id(visitor: int, started_at: float) -> str:
     """A stable id for one visit.
 
