@@ -55,6 +55,29 @@ def bestsellers(view_counts: dict[int, int] | Counter, k: int) -> list[int]:
             sorted(view_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:k]]
 
 
+def category_bestsellers(view_counts: dict[int, int] | Counter,
+                         category_of: dict[int, str], k: int):
+    """A recommender answering with the most-viewed items in the query's own
+    category, or the overall bestsellers when the query has no category.
+
+    This is the baseline a related-items feature has to beat. The global
+    bestseller list is too easy: an offline check on RetailRocket found this
+    one scoring about what the pipeline's co-occurrence does, at full coverage.
+    """
+    by_category: dict[str, Counter] = {}
+    for item, n in view_counts.items():
+        category = category_of.get(item)
+        if category and category != "uncategorised":
+            by_category.setdefault(category, Counter())[item] = n
+    # k + 1 so dropping the query item itself still leaves k answers.
+    top = {c: bestsellers(counts, k + 1) for c, counts in by_category.items()}
+    overall = bestsellers(view_counts, k + 1)
+
+    def recommend(product_id: int) -> list[int]:
+        return top.get(category_of.get(product_id, ""), overall)
+    return recommend
+
+
 class Result(NamedTuple):
     name: str
     cases: int

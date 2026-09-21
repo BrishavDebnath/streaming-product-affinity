@@ -517,18 +517,21 @@ with right:
         st.caption("Nothing recent for this product, so these come from the "
                    "most recent data it has.")
     if data:
+        why = {"co_occurrence": "viewed together",
+               "category_bestsellers": "popular in the same category",
+               "trending": "trending"}
         if data["source"] == "trending_fallback":
             st.info("Not enough data for this product yet, so these are "
                     "trending products instead.")
-            rows = [{"Product": r["name"] or r["product_id"],
-                     "Popularity score": r.get("score")}
-                    for r in data["related_products"]]
+        elif data["source"] == "category_fallback":
+            st.info("Not enough data for this product yet, so these are the "
+                    "most active products in its category.")
         else:
             st.success("...also viewed these products")
-            rows = [{"Product": r["name"] or r["product_id"],
-                     "Match score": r.get("affinity"),
-                     "Times seen together": r.get("pair_count")}
-                    for r in data["related_products"]]
+        rows = [{"Product": r["name"] or r["product_id"],
+                 "Why it's here": why.get(r.get("source"), r.get("source") or "trending"),
+                 "Times seen together": r.get("pair_count")}
+                for r in data["related_products"]]
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True,
                          width="stretch")

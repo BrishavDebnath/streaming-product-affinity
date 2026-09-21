@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode (ZooKeeper is removed in Kafka 4.x) |
 | No health checks, so Spark raced the broker | `condition: service_healthy` |
-| No tests | 128 tests (Spark, API, dashboard, real data), plus CI on every push |
+| No tests | 133 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503, not 500.
 - `tests/test_dashboard.py`: Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all four groups (128 tests). The Spark group still runs as a
+- `pytest` runs all four groups (133 tests). The Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -962,3 +962,22 @@ square in the middle of the column with labels too small to read. **Changed:**
 the frame height now comes from the drawing's own proportions at the column's
 usual width, clamped between 360 and 1000 px, so the graph fills the width it
 has. One test covers the square, wide, tall and missing-viewBox cases.
+
+### 90. The evaluation compared the pipeline with a baseline that was too easy
+The only baseline was the ten most-viewed products overall. While testing ML
+ideas for the roadmap, a stronger and just as simple one turned up: the ten
+most-viewed products in the query's own category. On the same 3,000 test
+cases it scored 19.7% hit-rate@10 at full coverage, the same as the
+pipeline's published co-occurrence figure. The "26.9x" claim was true, but
+measured against the wrong thing, and anyone trying the obvious comparison
+would have found that.
+
+**Changed:** `scripts/evaluate.py` now scores the category baseline on the
+same cases and reports the pipeline's difference from it in points, next to
+the old ratio. The API fills the slots co-occurrence leaves empty with the
+query category's most active products before falling back to trending
+(offline, that fill took the same test cases from 15.2% to 26.8%). Every
+related product now says where it came from, in the API and on the
+dashboard. `scripts/replay.py` also stopped overwriting a catalogue that
+already covers every replayed item, because the category baseline needs
+categories for every item, not only the replayed month's. Five tests.

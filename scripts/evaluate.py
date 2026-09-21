@@ -117,7 +117,10 @@ class ApiRecommender:
             return []
         response.raise_for_status()
         body = response.json()
-        self.sources[body.get("source", "unknown")] += 1
+        source = body.get("source", "unknown")
+        if source == "co_occurrence" and body.get("filled_from_category"):
+            source = "co_occurrence_plus_category"
+        self.sources[source] += 1
         items = [row["product_id"] for row in body.get("related_products", [])]
         self.cache[product_id] = items
         return items
@@ -201,6 +204,19 @@ def check_against_replay(run, start_day: str, train_days: float) -> str | None:
             f"--allow-window-mismatch to measure anyway.")
 
 
+def load_categories(path: Path) -> dict[int, str]:
+    """Item id to category, from the catalogue scripts/replay.py writes.
+
+    Build it for every item with `python scripts/replay.py --dry-run --days 140`.
+    A catalogue from a 30-day replay only knows that month's items, and the
+    rest fall back to the overall bestsellers, which understates the baseline.
+    """
+    if not path.is_file():
+        return {}
+    return {int(p["id"]): p["category"]
+            for p in json.loads(path.read_text(encoding="utf-8"))}
+
+
 def table(rows: list[tuple[str, str]]) -> str:
     width = max(len(name) for name, _ in rows)
     return "\n".join(f"  {name:<{width}}  {value}" for name, value in rows)
@@ -209,6 +225,8 @@ def table(rows: list[tuple[str, str]]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--events", type=Path, default=RAW / "events.csv")
+    parser.add_argument("--catalog", type=Path, default=ROOT / "data" / "catalog_retailrocket.json",
+                        help="item categories, for the category-bestseller baseline")
     parser.add_argument("--train-days", type=float, default=30.0,
                         help="must match the replay's --days; the evaluation\n     reads the manifest replay.py wrote and refuses any other window")
     parser.add_argument("--test-days", type=float, default=7.0)
@@ -272,6 +290,19 @@ def main() -> int:
     top = ev.bestsellers(train_views, args.k)
     baseline = ev.evaluate(f"bestsellers (top {args.k} of the training days)",
                            cases, lambda _product: top, args.k)
+    categories = load_categories(args.catalog)
+    by_category = None
+    if categories:
+        known = sum(c.query in categories for c in cases) / max(1, len(cases))
+        log.info("catalogue %s: %s items, %.1f%% of query products have a category",
+                 args.catalog, f"{len(categories):,}", 100 * known)
+        by_category = ev.evaluate(
+            "category bestsellers", cases,
+            ev.category_bestsellers(train_views, categories, args.k), args.k)
+    else:
+        log.warning("no catalogue at %s, so the category-bestseller baseline is "
+                    "not measured. Build one: python scripts/replay.py --dry-run "
+                    "--days 140", args.catalog)
 
     recommender = (ApiRecommender(config.API_BASE_URL, args.k, args.score_by)
                    if args.source == "api"
@@ -305,6 +336,12 @@ def main() -> int:
          f"{baseline.hit_rate:.3%}  ({baseline.hits:,} hits)"),
         ("lift over the baseline",
          f"{ratio:.2f}x" if ratio else "baseline scored zero"),
+        (f"hit-rate@{args.k}, category bestsellers",
+         f"{by_category.hit_rate:.3%}  ({by_category.hits:,} hits)"
+         if by_category else "not measured (no catalogue)"),
+        ("difference from category bestsellers",
+         f"{100 * (model.hit_rate - by_category.hit_rate):+.2f} points"
+         if by_category else "not measured"),
         ("answered (coverage)", f"{model.coverage:.1%}"),
         ("any-product hit-rate",
          f"{model.any_hit_rate:.3%} vs {baseline.any_hit_rate:.3%}"),
@@ -325,7 +362,14 @@ def main() -> int:
                      "coverage": model.coverage},
         "baseline": {"hit_rate": baseline.hit_rate, "hits": baseline.hits,
                      "any_hit_rate": baseline.any_hit_rate},
-        "lift": ratio, "sources": dict(recommender.sources),
+        "lift": ratio,
+        "category_baseline": ({"hit_rate": by_category.hit_rate,
+                               "hits": by_category.hits,
+                               "any_hit_rate": by_category.any_hit_rate}
+                              if by_category else None),
+        "points_over_category": (round(100 * (model.hit_rate - by_category.hit_rate), 2)
+                                 if by_category else None),
+        "sources": dict(recommender.sources),
         "seconds": round(time.time() - started, 1),
     }
     RESULTS.mkdir(exist_ok=True)
@@ -339,8 +383,11 @@ def main() -> int:
             "",
             f"| Model | hit-rate@{args.k} | Hits | Coverage |",
             "|---|---:|---:|---:|",
-            f"| **Pipeline** (co-occurrence, served by the API) | "
+            f"| **Pipeline** (co-occurrence, then category fill, served by the API) | "
             f"**{model.hit_rate:.2%}** | {model.hits:,} | {model.coverage:.0%} |",
+            *([f"| Category bestsellers (top {args.k} of the query's category) | "
+               f"{by_category.hit_rate:.2%} | {by_category.hits:,} | 100% |"]
+              if by_category else []),
             f"| Bestsellers (top {args.k} of the training days) | "
             f"{baseline.hit_rate:.2%} | {baseline.hits:,} | 100% |",
             "",
@@ -349,7 +396,12 @@ def main() -> int:
             f"Test: the following {args.test_days:g} day(s), "
             f"{len(visits):,} visits, never seen by the pipeline.",
             "",
-            (f"The pipeline is **{ratio:.2f}x** the baseline."
+            (f"Against the category bestsellers the pipeline is "
+             f"**{100 * (model.hit_rate - by_category.hit_rate):+.2f} points**, "
+             f"and it is {ratio:.2f}x the overall bestsellers."
+             if by_category and ratio else
+             f"The pipeline is **{ratio:.2f}x** the overall bestsellers. The "
+             f"category baseline was not measured (no catalogue)."
              if ratio else "The baseline scored zero on these cases."),
         ])
         if not REPORT.is_file():
