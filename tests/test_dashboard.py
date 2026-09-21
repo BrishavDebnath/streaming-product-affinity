@@ -425,3 +425,17 @@ def test_last_update_reads_like_a_clock():
     assert ui.ago(3649) == "1 h ago"
     assert ui.ago(3720) == "1 h 2 min ago"
     assert ui.ago(3 * 86400) == "3 days ago"
+
+
+def test_the_graph_frame_follows_the_drawing_shape():
+    """A fixed 560 px frame shrank a 51-product graph until its labels could
+    not be read. The frame height now follows the drawing's proportions."""
+    from src.ui import dashboard as ui
+
+    square = '<svg viewBox="0.00 0.00 1000.00 800.00">'
+    wide = '<svg viewBox="0.00 0.00 1600.00 400.00">'
+    tall = '<svg viewBox="0.00 0.00 300.00 3000.00">'
+    assert ui.graph_height(square) == int(ui.GRAPH_WIDTH_PX * 0.8)
+    assert ui.graph_height(wide) == ui.GRAPH_MIN_HEIGHT_PX
+    assert ui.graph_height(tall) == ui.GRAPH_MAX_HEIGHT_PX
+    assert ui.graph_height("<svg>") == ui.GRAPH_HEIGHT_PX

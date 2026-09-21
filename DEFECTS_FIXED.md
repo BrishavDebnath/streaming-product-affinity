@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 127 tests (Spark, API, dashboard, real data), plus CI on every push |
+| No tests | 128 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503 rather than 500.
 - `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all four groups (127 tests); the Spark group still runs as a
+- `pytest` runs all four groups (128 tests); the Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -952,3 +952,11 @@ After a finished replay the dashboard counted the time since the last result
 in raw seconds, which stops being readable after a minute. **Changed:** it
 now reads like a clock ("42 s ago", "6 min ago", "1 h 2 min ago", "3 days
 ago"), with a test for each step.
+
+### 89. The hover graph shrank real data until it could not be read
+The hover version of the graph sat in a frame of fixed height (560 px), and
+the drawing scales to fit it. A 51-product real-data graph came out as a small
+square in the middle of the column with labels too small to read. **Changed:**
+the frame height now comes from the drawing's own proportions at the column's
+usual width, clamped between 360 and 1000 px, so the graph fills the width it
+has. One test covers the square, wide, tall and missing-viewBox cases.

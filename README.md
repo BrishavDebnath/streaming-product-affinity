@@ -207,6 +207,10 @@ Four things had to be decided to make real data work ([ADR 0011](docs/adr/0011-r
 - **Real labels.** RetailRocket hashes its item properties, so there are no product names. The catalogue built for a replay says `Item 214536500` and `cat-1037`. Made-up names would make the screenshots prettier and the project dishonest.
 - **Closing the last windows.** A watermark only moves forward with event time, and during a replay nothing else produces any. So the replay ends by sending a few events timestamped after the end of the slice. They all use one reserved product id and each has its own session, so they can't form a pair, and the replay deletes their rows afterwards. Without them, the last two minutes of a five-minute replay would never be counted.
 
+![The affinity graph on real RetailRocket traffic: 51 products in mostly separate pairs and short chains](docs/screenshots/real-data-graph.png)
+
+*The same graph on real RetailRocket traffic after a 30-day replay. Real shopping looks nothing like the demo. Instead of a few dense clusters there are many small, separate pairs and short chains. 17 of the 30 strongest links join two products from the same category (the solid lines), and the pipeline never sees categories. The strongest pair, items 274435 and 369447, was viewed together 370 times.*
+
 **How it's scored.** Train on the replayed days and test on the days after, which the pipeline has never seen. For each held-out visit, the pipeline is given the first product and returns ten. It scores a hit if the product the shopper actually viewed next is among those ten. The baseline answers every question with the ten most-viewed products from the training period, which is what a shop shows when it has no recommender at all. Both get exactly the same test cases, and the pipeline's answers come from the live `/related-products` endpoint, not a separate copy of the logic.
 
 Measured on 3,000 held-out visits, with 30 days of RetailRocket traffic (617,109 events) replayed through Kafka and the following 7 days used for testing:
@@ -241,7 +245,7 @@ Everything runs on one machine's cores, so these figures describe a laptop, not 
 
 ## Tests
 
-There are 127 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
+There are 128 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
 
 | What | How | Where it runs |
 |---|---|---|
