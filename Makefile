@@ -66,10 +66,10 @@ dataset:
 	python scripts/fetch_dataset.py
 
 replay:
-	docker compose run --rm replay --days 7
+	docker compose run --rm replay --days 30
 
 evaluate:
-	docker compose run --rm evaluate --train-days 7 --test-days 7
+	docker compose run --rm evaluate --train-days 30 --test-days 7
 
 down:
 	docker compose down
