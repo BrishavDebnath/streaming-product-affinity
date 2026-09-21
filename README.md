@@ -46,6 +46,10 @@ Most of the work went into the streaming side. Spark's memory stays bounded, wri
 
 ## Demo
 
+![A 45-second walkthrough: clicking products, the clicks arriving in the pipeline, and hovering over the affinity graph](docs/screenshots/demo.gif)
+
+*Clicking View and Add to cart sends real events to Kafka. Further down, pointing at a line in the graph shows how many times that pair was seen together.*
+
 ![Pipeline health: 1.3 s processing delay, about 20 events/s, events per minute over the last 30 minutes](docs/screenshots/pipeline-health.png)
 
 *Pipeline health. These numbers are read back from what Spark actually saved, not from the producer's own counter.*

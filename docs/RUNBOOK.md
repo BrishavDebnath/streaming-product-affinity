@@ -60,7 +60,7 @@ http://localhost:9090/alerts.
 
 ## Diagnose: no related products appearing
 
-1. `curl localhost:8000/stats` - is `product_pairs` non-zero?
+1. Run `curl localhost:8000/stats`. Is `product_pairs` non-zero?
 2. If zero, has a co-occurrence window closed yet? A pair is saved only once
    events arrive about `COOCCURRENCE_WINDOW + CO_VIEW_GAP + WATERMARK` after it
    (about 5 minutes with the defaults), because the join holds its output back
@@ -77,7 +77,7 @@ http://localhost:9090/alerts.
 
 ## Diagnose: lag climbing
 
-1. `curl localhost:8000/metrics | grep affinity_` - check
+1. Run `curl localhost:8000/metrics | grep affinity_` and check
    `affinity_kafka_lag_offsets` (events not read yet, measured after each
    batch) and `affinity_state_rows` (one line per query). A lag that returns
    near zero after each batch is fine; a lag whose lowest point keeps rising
@@ -95,7 +95,7 @@ The Executors tab at http://localhost:4040/executors/ shows Storage Memory
 climbing by roughly 15 MB a minute, for as long as the job runs. This is a
 bookkeeping quirk of the UI in local mode, not a leak: it adds the small
 broadcast blocks each micro-batch creates, but does not subtract them when
-Spark removes them. The same page's API shows the real figure -
+Spark removes them. The same page's API shows the real figure:
 `peakMemoryMetrics.OnHeapStorageMemory` stayed at about 30 MB after an hour,
 and a separate test showed the UI number rising while the real peak levelled
 off. What matters for memory is the container, not that column:

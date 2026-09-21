@@ -328,12 +328,12 @@ def write_report(rows, pair_values, pair_lost, env, partitions, args, trigger):
                    "settled, and Spark cleared what was left within two "
                    "trigger intervals.")
     else:
-        out.append("**No tested rate kept up** - see the table.")
+        out.append("**No tested rate kept up.** See the table.")
     out.append("")
     out += [
         "| Target events/s | Sent events/s | Spark read events/s | "
         "Batch p50 / max | Max unread | Cleared after | "
-        "Event -> trending row p50 / p95 | Join state rows | Kept up |",
+        "Event to trending row p50 / p95 | Join state rows | Kept up |",
         "|---:|---:|---:|---:|---:|---:|---:|---:|:--|",
     ]
     for r in rows:
@@ -358,24 +358,24 @@ def write_report(rows, pair_values, pair_lost, env, partitions, args, trigger):
     out += [
         "How to read it:",
         "",
-        "- **Sent** is what the load generator achieved; it shares the CPU with "
-        "Spark, so at high targets it can fall short of the target itself.",
+        "- **Sent** is the rate the load generator achieved. It shares the CPU "
+        "with Spark, so at high targets it can fall short of the target.",
         "- **Spark read** is the trending query's own input rate. The pairing "
         "query reads the topic twice (it joins the stream with itself), so its "
         "figure is double.",
         "- **Max unread** is the largest Kafka backlog Spark reported after a "
         "batch. Some backlog is normal: events keep arriving while a batch "
         "runs.",
-        "- **Join state rows** is the recent events the co-occurrence join "
-        "holds to find pairs. It grows with the rate but stays bounded by the "
+        "- **Join state rows** is the number of recent events the co-occurrence "
+        "join holds to find pairs. It grows with the rate but stays bounded by the "
         f"{hyphenate(config.CO_VIEW_GAP)} co-view gap, and RocksDB keeps it "
         "off the JVM heap (ADR 0001, ADR 0009).",
-        "- **Event -> trending row** is measured with probe events: the time "
-        "from sending one event to its trending row being written. It "
+        "- **Event to trending row** is measured with probe events: the time "
+        "from sending one event until its trending row is written. It "
         "includes up to one trigger interval of waiting "
         f"({config.TRIGGER_INTERVAL}) plus the batch itself.",
         "",
-        "### Event -> product pair",
+        "### Event to product pair",
         "",
     ]
     if pair_values:
@@ -390,11 +390,13 @@ def write_report(rows, pair_values, pair_lost, env, partitions, args, trigger):
         out.append("No pair probe was written within the wait.")
     out += [
         "",
-        f"This delay is by design, not load: a pair is written once its "
+        f"This delay comes from the design, not from load. A pair is written "
+        f"once its "
         f"{hyphenate(config.COOCCURRENCE_WINDOW)} window has closed, the "
         f"{hyphenate(config.CO_VIEW_GAP)} co-view gap has passed and the "
-        f"{hyphenate(config.WATERMARK)} watermark has moved beyond both - about "
-        f"{floor / 60:.0f} minutes plus up to one trigger. See ADR 0001 and "
+        f"{hyphenate(config.WATERMARK)} watermark has moved beyond both. That "
+        f"is about {floor / 60:.0f} minutes plus up to one trigger. See ADR "
+        "0001 and "
         "ADR 0002.",
     ]
     bench.update_section("throughput", "\n".join(out))

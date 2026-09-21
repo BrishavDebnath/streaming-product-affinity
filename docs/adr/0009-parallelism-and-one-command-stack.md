@@ -1,4 +1,4 @@
-# ADR 0009 - Parallel by default, and one command for the whole stack
+# ADR 0009: Parallel by default, and one command for the whole stack
 
 **Status:** accepted
 
@@ -10,7 +10,7 @@ and the API, dashboard, producer and seed ran in four host terminals.
 ## Problems
 - One Kafka partition means one Spark read task, whatever the core count.
 - The default (HDFS-backed) state store keeps every state row on the JVM
-  heap; the co-occurrence join holds the most state, so heap is the ceiling.
+  heap. The co-occurrence join holds the most state, so heap is the ceiling.
 - Checkpoints on a Windows bind mount are slow (thousands of small files
   crossing the VM boundary) and were easy to delete by accident or to leave
   stale after a reset.
@@ -18,8 +18,8 @@ and the API, dashboard, producer and seed ran in four host terminals.
   main reasons a visitor could fail to run the project.
 
 ## Decision
-- `kafka-init` creates `clickstream` with `KAFKA_PARTITIONS` (6) partitions;
-  events are keyed by user, so a user's events stay in order.
+- `kafka-init` creates `clickstream` with `KAFKA_PARTITIONS` (6) partitions.
+  Events are keyed by user, so a user's events stay in order.
 - `SHUFFLE_PARTITIONS` (8) matches the `local[8]` master instead of Spark's
   default of 200, which would schedule 200 near-empty tasks per batch.
 - `STATE_STORE=rocksdb` with changelog checkpointing: state lives off-heap and

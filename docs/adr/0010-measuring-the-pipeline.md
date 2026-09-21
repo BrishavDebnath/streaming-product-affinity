@@ -1,4 +1,4 @@
-# ADR 0010 - How throughput, latency and recovery are measured
+# ADR 0010: How throughput, latency and recovery are measured
 
 **Status:** accepted
 
@@ -18,18 +18,18 @@ produced a number that could be defended in an interview.
   `pipeline_metrics`. The benchmark reads those instead of sampling the API,
   so every batch in a step counts.
 - **Real Kafka lag.** Spark's `maxOffsetsBehindLatest` is measured against
-  the offsets Spark saw when it planned the batch; without
+  the offsets Spark saw when it planned the batch. Without
   `maxOffsetsPerTrigger` it is always 0. The job now asks the broker for its
   latest offsets after each batch and subtracts what the batch read.
-- **"Kept up" is a rule, not a judgement.** A step kept up when Spark read
-  at least 90% of the events sent, the backlog did not climb once the step
-  had settled (the first three batches are ignored; after that, the lowest
-  backlog of the second half must not be above the highest of the first
-  half), and the backlog cleared within two trigger intervals after the load
-  stopped. The backlog's slope is noise, so it is never used directly; the
-  `KafkaLagGrowing` alert uses the same floor comparison.
+- **"Kept up" is a fixed rule.** A step kept up when three things held. Spark
+  read at least 90% of the events sent. The backlog did not climb once the
+  step had settled: the first three batches are ignored, and after that the
+  lowest backlog of the second half must not be above the highest of the
+  first half. And the backlog cleared within two trigger intervals after the
+  load stopped. The backlog's slope is noise, so it is never used directly.
+  The `KafkaLagGrowing` alert uses the same floor comparison.
 - **Latency by probes.** Probe events with unique product ids are sent
-  during each step; latency is the time from sending to the row's
+  during each step. Latency is the time from sending to the row's
   `_updated_at`. Rows are stamped when they are written, not when the batch
   starts: Spark computes a batch lazily, so a start-time stamp read low.
 - **Recovery by counting.** The recovery test kills Spark with SIGKILL through

@@ -1,4 +1,4 @@
-# ADR 0005 — Malformed events are captured, never dropped
+# ADR 0005: Malformed events are captured, never dropped
 
 **Status:** accepted
 
@@ -7,7 +7,7 @@
 nulls that flows downstream unnoticed.
 
 ## Decision
-Validation flags each event with an `invalid_reason`; invalid rows go to a
+Validation flags each event with an `invalid_reason`. Invalid rows go to a
 `dead_letter` collection with the original payload attached. The producer
 emits malformed events at `MALFORMED_RATE` so the path is always exercised.
 

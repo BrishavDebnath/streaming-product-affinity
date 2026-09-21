@@ -1,4 +1,4 @@
-# ADR 0007 — Sinks write from executors; aggregates expire
+# ADR 0007: Sinks write from executors, and aggregates expire
 
 **Status:** accepted
 
@@ -13,16 +13,16 @@ rows = [r.asDict() for r in batch_df.collect()]
 `collect()` moves the entire micro-batch into the **driver** heap before a
 single document is written. On a 12-product catalogue that is 12 rows and
 invisible. At realistic cardinality the driver heap becomes the hard ceiling
-on batch size, and the job dies on a traffic spike — the same class of failure
-as ADR 0001, in the write path instead of the state store.
+on batch size, and the job dies on a traffic spike. It is the same class of
+failure as ADR 0001, in the write path instead of the state store.
 
 A second problem: nothing ever deleted aggregate rows. The pipeline writes one
 document per window per product, every window, forever.
 
 ## Decision
 - Both sinks use `foreachPartition`, opening one Mongo connection per
-  partition and flushing in batches of 1,000. Data stays distributed; writes
-  happen in parallel on the executors.
+  partition and flushing in batches of 1,000. Data stays distributed, and
+  writes happen in parallel on the executors.
 - MongoDB TTL indexes on `_updated_at` expire `trending`, `product_pairs`
   and `dead_letter` after `RETENTION_HOURS` (default 48).
 

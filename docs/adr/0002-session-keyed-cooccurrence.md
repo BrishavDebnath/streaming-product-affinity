@@ -1,4 +1,4 @@
-# ADR 0002 — Co-occurrence joins on session, not on user
+# ADR 0002: Co-occurrence joins on session, not on user
 
 **Status:** accepted (supersedes the original user-keyed join)
 
@@ -17,17 +17,17 @@ every user is continuously active, so "same 10-minute window" stops meaning
 × 50 users                      = 1,314,500 pairs      (~73x too many)
 ```
 
-Observed in production: 638,467 co-occurrences for a single pair. Worse than
-the number being wrong, the ranking became meaningless — when everything
+Observed in production: 638,467 co-occurrences for a single pair. The number
+was wrong, but the ranking was worse: it became meaningless. When everything
 pairs with everything, pair count just measures popularity. For a MacBook Air
 the top "related products" were the two most-trending phones.
 
 ## Decision
-The producer stamps a `session_id` per browsing session; the join keys on it.
-Events with no session id (dashboard clicks) fall back to a user-derived key
-so they are never silently dropped.
+The producer stamps a `session_id` per browsing session, and the join keys on
+it. Events with no session id (dashboard clicks) fall back to a user-derived
+key so they are never silently dropped.
 
 ## Consequences
-Pair counts fall roughly 73x to a meaningful scale, and genuinely related
-products outrank bestsellers. The time constraint is kept — it is what bounds
-the join state, independent of the session key.
+Pair counts fall roughly 73x to a meaningful scale, and related products
+outrank bestsellers. The time constraint stays, because it is what bounds the
+join state, independent of the session key.
