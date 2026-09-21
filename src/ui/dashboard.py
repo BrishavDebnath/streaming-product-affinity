@@ -227,9 +227,24 @@ def build_dot(graph, related=None, colours=None, counts_on_lines=True):
     return "\n".join(lines)
 
 
-# Height of the hover graph. Fixed, because an embedded page cannot size its
-# own frame; the SVG scales to fit inside it, keeping its proportions.
-GRAPH_HEIGHT_PX = 560
+# The hover graph sits in a frame, and a frame cannot size itself to its
+# content. A fixed height squeezed a 51-product real-data graph into a small
+# square with unreadable labels, so the height comes from the drawing's own
+# proportions at the width the graph column usually has on a laptop screen.
+GRAPH_WIDTH_PX = 1050
+GRAPH_MIN_HEIGHT_PX = 360
+GRAPH_MAX_HEIGHT_PX = 1000
+GRAPH_HEIGHT_PX = 560           # used when the SVG carries no viewBox
+
+
+def graph_height(svg: str) -> int:
+    """Frame height that lets the SVG fill the column's width."""
+    box = re.search(r'viewBox="[\d.\-]+ [\d.\-]+ ([\d.]+) ([\d.]+)"', svg)
+    if not box or float(box.group(1)) <= 0:
+        return GRAPH_HEIGHT_PX
+    ratio = float(box.group(2)) / float(box.group(1))
+    return int(min(GRAPH_MAX_HEIGHT_PX,
+                   max(GRAPH_MIN_HEIGHT_PX, GRAPH_WIDTH_PX * ratio)))
 
 
 def render_svg(dot: str) -> str | None:
@@ -560,7 +575,8 @@ if graph and graph["edges"]:
         svg = render_svg(build_dot(graph, catalog.categories_related,
                                    graph_colours, counts_on_lines=False))
         if svg:
-            embed(graph_page(svg, graph), height=GRAPH_HEIGHT_PX + 10)
+            height = graph_height(svg)
+            embed(graph_page(svg, graph, height), height=height + 10)
             st.caption("Point at a line to see how many times the pair was "
                        "seen together.")
         else:
