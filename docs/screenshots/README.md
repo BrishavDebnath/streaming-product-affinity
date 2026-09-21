@@ -9,7 +9,7 @@ The main README renders `pipeline-health.png`, `affinity-graph.png` and
 | `dashboard.png` | the whole page once trending and the graph have data | demo catalogue |
 | `affinity-graph.png` | the graph alone, zoomed, with the legend beside it | demo catalogue |
 | `pipeline-health.png` | the four-tile row: processing delay, last update, events in the last full minute, events/s | demo catalogue |
-| `real-data-graph.png` | the graph on real traffic - `Item …` labels, `cat-…` categories | RetailRocket |
+| `real-data-graph.png` | the graph on real traffic, with `Item …` labels and `cat-…` categories | RetailRocket |
 | `demo.gif` | 30-60 s: click a product, watch it arrive in trending | demo catalogue |
 
 ## Capturing the demo set
@@ -36,8 +36,8 @@ docker compose up -d --force-recreate api dashboard
 Capture **within 30 minutes of the replay finishing**: `/trending` and the
 graph both look back `TRENDING_LOOKBACK_MINUTES` / `PAIR_LOOKBACK_MINUTES`
 (30 by default), and after that the page correctly reports that it is showing
-retained history rather than live activity - honest, but not what you want in
-a screenshot.
+retained history instead of live activity. That is honest, but not what you
+want in a screenshot.
 
 ## Practicalities
 

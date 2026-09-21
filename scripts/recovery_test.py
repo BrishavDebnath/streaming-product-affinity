@@ -323,7 +323,7 @@ def main():
         f"Measured {env['measured_at']} with `docker compose run --rm "
         f"recovery`: {args.rate:,} test events/s, Spark killed with SIGKILL "
         f"after {args.warmup} s and started again {results.get('downtime', 0):.0f}"
-        " s later, traffic continuing throughout.",
+        " s later, with traffic continuing throughout.",
         "",
         "| | |",
         "|---|---|",
@@ -340,15 +340,15 @@ def main():
         f"| Minutes missing across the outage | {gaps} |",
         "",
         ("**Exactly-once results:** every event was counted once. A batch "
-         "interrupted by the kill is run again after the restart: Spark "
+         "interrupted by the kill runs again after the restart. Spark "
          "resumes from the Kafka offsets and state in its checkpoint, and the "
          "MongoDB writes are upserts on the window key, so the re-run "
-         "overwrites instead of adding (ADR 0004)."
+         "overwrites rows instead of adding to them (ADR 0004)."
          if exact else
-         "**The counts did not match** - see the table and the script output."),
+         "**The counts did not match.** See the table and the script output."),
         "",
-        "The first result includes the JVM and Spark start-up; the backlog "
-        "is cleared in the first batch or two after that.",
+        "The time to the first result includes JVM and Spark start-up. The "
+        "backlog clears in the first batch or two after that.",
     ])
     bench.update_section("recovery", body)
     print(f"Wrote the Recovery section of {bench.REPORT_PATH}.")

@@ -18,13 +18,16 @@ REPORT_PATH = os.path.join("docs", "BENCHMARKS.md")
 REPORT_HEADER = """# Benchmarks
 
 Measured on a single machine with Docker Compose, using the scripts in
-`scripts/`. Re-run them to reproduce; each run replaces its own section.
+`scripts/`. Re-run them to reproduce the figures. Each run replaces its own
+section.
 
-    docker compose run --rm loadtest     # throughput and latency
-    docker compose run --rm recovery     # crash and restart
+```bash
+docker compose run --rm loadtest     # throughput and latency
+docker compose run --rm recovery     # crash and restart
+```
 
-Everything - Kafka, Spark, MongoDB, the load generator - shares the same CPU
-cores, so these are figures for one laptop, not for a cluster.
+Kafka, Spark, MongoDB and the load generator all share the same CPU cores, so
+these are figures for one laptop, not for a cluster.
 """
 
 

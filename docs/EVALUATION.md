@@ -19,22 +19,22 @@ The pipeline is **23.77x** the baseline.
 
 ## Reading those numbers
 
-The table above is what a client actually receives from `/related-products`:
-co-occurrence where the pipeline has pairs, trending products where it does
-not. Running the same 3,000 cases against the pair table alone
+The table above is what a client gets from `/related-products`:
+co-occurrence where the pipeline has pairs, trending products where it has
+none. Running the same 3,000 cases against the pair table alone
 (`--source mongo`) separates the two:
 
 | Source | hit-rate@10 | Coverage | vs baseline |
 |---|---:|---:|---:|
-| MongoDB - co-occurrence only, ranked by pair count | **19.73%** | 64% | 26.91x |
-| API - co-occurrence plus the trending fallback | 17.43% | 89% | 23.77x |
-| Bestsellers - top 10 of the training month | 0.73% | 100% | - |
+| MongoDB: co-occurrence only, ranked by pair count | **19.73%** | 64% | 26.91x |
+| API: co-occurrence plus the trending fallback | 17.43% | 89% | 23.77x |
+| Bestsellers: top 10 of the training month | 0.73% | 100% | n/a |
 
-Read that as a precision/coverage trade rather than a ranking. The pair table
-answered 1,932 of the 3,000 cases and was right about one in five of them; the
+This is a trade between precision and coverage, not a ranking. The pair table
+answered 1,932 of the 3,000 cases and was right about one in five of them. The
 API answered 2,673, because when it has no pairs it falls back to trending, and
-those extra answers are mostly wrong - which is the correct behaviour for a
-"customers also viewed" strip that has to render something, and the wrong
+most of those extra answers are wrong. That is the right behaviour for a
+"customers also viewed" strip, which has to render something. It is the wrong
 behaviour for a number you want to quote. **19.7% at 64% coverage is what the
 co-occurrence model itself is worth. 17.4% at 89% is what the product does.**
 
@@ -43,36 +43,37 @@ co-occurrence model itself is worth. 17.4% at 89% is what the product does.**
 The pair table is ranked by `pair_count` and the API ranks by `affinity`
 (the count weighted by how unusual the pairing is). On this dataset the plain
 count wins by 2.3 points. Weighting rewards pairs that are distinctive but
-rare, and rare pairs are exactly the ones a 30-day window measures badly - a
-pair seen four times has a wonderful affinity score and no evidence behind it.
+rare, and a 30-day window measures rare pairs badly. A pair seen four times
+has a wonderful affinity score and no evidence behind it.
 `scripts/evaluate.py --score-by {affinity,lift,pmi}` exists so this can be
-re-measured rather than argued about, and `MIN_PAIR_COUNT` is the knob that
-decides how much evidence a pair needs before it is allowed to rank at all.
+re-measured instead of argued about. `MIN_PAIR_COUNT` sets how much evidence a
+pair needs before it can rank at all.
 
-**What makes this conservative.** 1,068 of the 3,000 query products had no
-pairs in the training month at all - real cold start - and every one counts as
-a miss for the pipeline while the bestseller list still answers. Training on
-more days, or lowering `MIN_PAIR_COUNT`, would raise coverage; these numbers
-are 30 days of training with unchanged defaults.
+**Why these numbers are conservative.** 1,068 of the 3,000 query products had
+no pairs at all in the training month. That is real cold start, and each one
+counts as a miss for the pipeline while the bestseller list still answers.
+Training on more days, or lowering `MIN_PAIR_COUNT`, would raise coverage.
+These numbers come from 30 days of training with the defaults unchanged.
 
-**What it does not say.** This measures a "customers also viewed" strip, not
+**What it does not measure.** This tests a "customers also viewed" strip, not
 personalisation: the model sees one product, not a shopper's history. The
-looser `any-product` figure - whether anything recommended appeared later in
-the same visit, not just the immediate next view - is reported by the script
-too, and is the easier question.
+script also reports the looser `any-product` figure, which counts a hit if
+anything recommended appeared anywhere later in the same visit, instead of
+only in the next view. That is an easier question.
 
 ## How these numbers are kept honest
 
 The pipeline's rows carry replay-clock timestamps, not dataset dates, so no
 query on `product_pairs` can tell you which days of 2015 produced them. That
-makes one mistake invisible and very expensive: splitting the dataset at day 7
-while the pipeline holds a 30-day replay tests the model on days it was trained
-on, and scores **35.1%** - double the truth - without erroring.
+makes one mistake both invisible and expensive. If you split the dataset at
+day 7 while the pipeline holds a 30-day replay, you test the model on days it
+was trained on. It scores **35.1%**, double the true figure, and nothing
+errors.
 
-So `scripts/replay.py` writes what it sent to a `replay_runs` manifest, and
-`scripts/evaluate.py` refuses to measure against a training window that is not
-the window replayed. Reproducing the table above is therefore a fixed sequence with
-no judgement in it:
+So `scripts/replay.py` records what it sent in a `replay_runs` manifest, and
+`scripts/evaluate.py` refuses to measure against any training window other
+than the one replayed. Reproducing the table above is a fixed sequence with no
+judgement calls:
 
 ```bash
 docker compose down -v                              # nothing carried over
