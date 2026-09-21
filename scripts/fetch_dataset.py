@@ -195,7 +195,7 @@ def main() -> int:
     (args.dest / "MANIFEST.json").write_text(json.dumps(manifest, indent=2),
                                              encoding="utf-8")
     print(f"\nwrote {args.dest / 'MANIFEST.json'}")
-    print("next:  python scripts/replay.py --days 7")
+    print("next:  python scripts/replay.py --days 30")
     return 0
 
 

@@ -1087,6 +1087,28 @@ def test_type_checking_survives_third_party_stubs():
           and "follow_imports_for_stubs = true" in cfg)
 
 
+def test_every_action_is_pinned_to_a_commit():
+    """A tag is a moving pointer: whoever controls the action repository can
+    repoint v7 at new code, and it runs with this workflow's permissions on
+    the next push. A commit SHA cannot be repointed. Dependabot raises them,
+    and CI proves the new SHA still works - see .github/dependabot.yml."""
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    workflows = os.path.join(root, ".github", "workflows")
+    files = [f for f in os.listdir(workflows) if f.endswith((".yml", ".yaml"))]
+    check("there are workflows to check", bool(files), files)
+
+    for name in sorted(files):
+        text = open(os.path.join(workflows, name), encoding="utf-8").read()
+        for ref in re.findall(r"uses:\s*(\S+)", text):
+            if ref.startswith("./"):
+                continue                       # a local action, nothing to pin
+            _, _, version = ref.partition("@")
+            check(f"{name}: {ref} is pinned to a commit",
+                  bool(re.fullmatch(r"[0-9a-f]{40}", version)), ref)
+
+
 def test_kafka_clients_use_only_known_settings():
     """kafka-python 3 rejects unknown settings at runtime (buffer_memory and
     api_version_auto_timeout_ms both slipped through once). Check every

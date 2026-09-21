@@ -231,13 +231,13 @@ def test_an_answer_from_outside_the_lookback_says_so(api, client):
 
     body = client.get(f"/related-products/{LAPTOP}").json()
     assert body["source"] == "co_occurrence"
-    assert body["window"] == "all_retained"
-    assert body["lookback_minutes"] is None
+    assert body["window"] == "latest_available"
+    assert body["as_of"] is not None, "the caller must see how old this is"
     assert [r["product_id"] for r in body["related_products"]] == [SLEEVE]
 
     add_pair(api, LAPTOP, HUB, offset=1, count=5)            # a minute ago
     fresh = client.get(f"/related-products/{LAPTOP}").json()
-    assert fresh["window"] == "recent"
+    assert fresh["window"] == "recent" and fresh["as_of"] is None
     assert fresh["lookback_minutes"] == config.PAIR_LOOKBACK_MINUTES
     assert [r["product_id"] for r in fresh["related_products"]] == [HUB]
 
@@ -246,18 +246,40 @@ def test_the_graph_uses_the_same_lookback_as_related_products(api, client):
     """It summed every window ever written, so a graph next to a 30-minute
     'trending' panel was quietly showing all-time affinity."""
     add_pair(api, LAPTOP, SLEEVE, offset=600, count=20)      # ten hours ago
+    add_pair(api, PHONE, SLEEVE, offset=1200, count=20)     # twenty hours ago
     old = client.get("/graph").json()
-    assert old["window"] == "all_retained" and old["edge_count"] == 1
-    assert old["lookback_minutes"] is None
+    assert old["window"] == "latest_available" and old["as_of"] is not None
+    # Anchored on the newest data, not unbounded: the twenty-hour-old pair is
+    # outside the same 30-minute lookback and must not appear.
+    assert {(e["source"], e["target"]) for e in old["edges"]} == {(LAPTOP, SLEEVE)}
 
     add_pair(api, PHONE, HUB, offset=1, count=20)            # a minute ago
+    # The graph is cached for GRAPH_CACHE_SECONDS because it groups every pair
+    # row in the lookback - over a million after a replayed month, 5-6 seconds.
+    # New data is therefore visible only once that expires; clear it here
+    # rather than sleeping a minute.
+    api._CACHE.clear()
     recent = client.get("/graph").json()
     assert recent["window"] == "recent"
     assert {(e["source"], e["target"]) for e in recent["edges"]} == {(HUB, PHONE)}
     assert recent["lookback_minutes"] == config.PAIR_LOOKBACK_MINUTES
 
     wide = client.get("/graph?minutes=2000").json()
-    assert wide["edge_count"] == 2, "a caller can still ask for a wider window"
+    assert wide["edge_count"] == 3, "a caller can still ask for a wider window"
+
+
+def test_the_graph_is_cached_because_it_is_the_expensive_one(api, client):
+    """Measured at 5-6 s on a replayed month (1.2M pair rows), which is over
+    the dashboard's timeout - so the page showed "no pairs yet" for data it
+    had. Recomputing that per request keeps a core busy for nobody."""
+    add_pair(api, LAPTOP, SLEEVE, count=20)
+    client.get("/graph")
+    client.get("/graph")
+    counters = client.get("/stats").json()["counters"]
+    assert counters["cache_hits"] >= 1 and counters["cache_misses"] == 1
+    # A different question is a different cache entry.
+    client.get("/graph?limit=5")
+    assert client.get("/stats").json()["counters"]["cache_misses"] == 2
 
 
 # --------------------------------------------------- pipeline and telemetry

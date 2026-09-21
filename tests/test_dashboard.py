@@ -194,7 +194,7 @@ def test_the_page_says_when_it_is_showing_history_not_now(stack):
     app = run()
     assert not app.exception
     captions = " ".join(c.value for c in app.caption)
-    assert "everything still retained" in captions or "retained history" in captions
+    assert "most recent" in captions, captions
 
 
 def test_the_graph_colours_the_categories_it_actually_has(stack, monkeypatch):
@@ -214,6 +214,10 @@ def test_the_graph_colours_the_categories_it_actually_has(stack, monkeypatch):
                         {p["category"]: [p["category"]] for p in real})
 
     fill(stack)
+    # Importing the page above ran it once against an empty database, and the
+    # graph is cached for GRAPH_CACHE_SECONDS - so without this the run below
+    # would be served the empty answer.
+    stack._CACHE.clear()
     app = run()
     assert not app.exception, app.exception
 

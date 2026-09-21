@@ -262,7 +262,7 @@ services:
         condition: service_healthy
 
   # Replays real RetailRocket traffic through Kafka (docs/EVALUATION.md):
-  #     docker compose run --rm replay --days 7
+  #     docker compose run --rm replay --days 30
   # data/ is writable here because the replay writes the catalogue it builds.
   replay:
     <<: *app
@@ -279,7 +279,7 @@ services:
         condition: service_completed_successfully
 
   # Scores the pipeline against the bestseller baseline on held-out days:
-  #     docker compose run --rm evaluate --train-days 7 --test-days 7
+  #     docker compose run --rm evaluate --train-days 30 --test-days 7
   evaluate:
     <<: *app
     container_name: affinity-evaluate

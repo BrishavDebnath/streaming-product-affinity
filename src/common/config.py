@@ -170,6 +170,12 @@ RETENTION_HOURS = _int("RETENTION_HOURS", 48)
 # a fresh Mongo aggregation is wasted work.
 CACHE_TTL_SECONDS = _float("CACHE_TTL_SECONDS", 5.0)
 
+# The graph is the one expensive read: it groups every pair row inside the
+# lookback, and after a replayed month that is over a million of them - 5-6
+# seconds, measured. Recomputing that every five seconds would keep one core
+# busy for nobody's benefit, so it gets its own, longer TTL.
+GRAPH_CACHE_SECONDS = _float("GRAPH_CACHE_SECONDS", 30.0)
+
 EVENT_TYPES = ("view", "click", "add_to_cart", "purchase", "search")
 
 # Relative weight of each event type when scoring co-occurrence. A purchase

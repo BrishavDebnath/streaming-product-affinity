@@ -131,9 +131,9 @@ def emit(user_id, product_id, event_type):
     })
 
 
-def api(path, quiet=False):
+def api(path, quiet=False, timeout=5):
     try:
-        r = requests.get(f"{config.API_BASE_URL}{path}", timeout=5)
+        r = requests.get(f"{config.API_BASE_URL}{path}", timeout=timeout)
         r.raise_for_status()
         return r.json()
     except requests.RequestException as exc:
@@ -351,9 +351,9 @@ with right:
     data = api(f"/related-products/{target}?limit=8", quiet=True)
     if data is None:
         st.info("No data for this product yet.")
-    if data and data.get("window") == "all_retained":
-        st.caption("Nothing in the recent lookback for this product, so these "
-                   "come from the whole retained history.")
+    if data and data.get("window") == "latest_available":
+        st.caption("Nothing recent for this product, so these come from the "
+                   "most recent data it has.")
     if data:
         if data["source"] == "trending_fallback":
             st.info("Not enough data for this product yet, so these are "
@@ -395,11 +395,17 @@ links = st.slider("Lines shown (strongest first)", min_value=10, max_value=70,
                         f"The catalogue has {len(catalog.PRODUCTS):,} products, "
                         "far more pairs than a readable graph: this is the "
                         "strongest few. Move it right for weaker links."))
-graph = api(f"/graph?limit={links}", quiet=True)
-if graph and graph.get("window") == "all_retained":
-    st.caption("No pairs inside the recent lookback, so this is everything "
-               "still retained - the history of a finished run rather than "
-               "what is happening now.")
+# The graph is the one slow read - it groups every pair row in the lookback,
+# which after a replayed month is over a million of them (5-6 s, measured).
+# The API caches it; this timeout is what lets the first, uncached call
+# finish, instead of aborting at five seconds and reporting "no pairs yet"
+# for data that is right there.
+with st.spinner("Building the affinity graph..."):
+    graph = api(f"/graph?limit={links}", quiet=True, timeout=30)
+if graph and graph.get("window") == "latest_available":
+    st.caption("No pairs in the last few minutes, so this is the most recent "
+               f"{graph.get('lookback_minutes')} minutes of data that exists - "
+               "the end of a finished run rather than what is happening now.")
 if graph and graph["edges"]:
     # One colour assignment, shared by the picture and its legend.
     graph_colours = colour_map(n["category"] for n in graph["nodes"])
