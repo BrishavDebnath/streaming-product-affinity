@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode; ZooKeeper is removed in Kafka 4.x |
 | No health checks — Spark raced the broker | `condition: service_healthy` |
-| No tests | 123 tests (Spark, API, dashboard, real data), plus CI on every push |
+| No tests | 127 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -586,7 +586,7 @@ API or the dashboard, and CI ran four lint rules and that one file.
   503 rather than 500.
 - `tests/test_dashboard.py` - Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all four groups (123 tests); the Spark group still runs as a
+- `pytest` runs all four groups (127 tests); the Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -914,3 +914,41 @@ while the override writes one.
 
 **The 35.1% figure is withdrawn.** It appears nowhere in the README or in
 `docs/EVALUATION.md`; the published numbers are the 30-day ones below.
+
+### 86. On real data, the graph's colours contradicted its lines
+A 30-day RetailRocket replay put **31 categories** on the 30-line graph, and
+the dashboard coloured them from a 12-colour palette by wrapping round it. So
+11 colours each stood for two or three unrelated categories: Items 274435,
+257597 and 369447 were all the same gold while the dashed lines between them
+said "different categories". The legend showed eight of the 31 and named
+colours that also meant something else.
+
+More colours would not fix it - even counting only categories with two or more
+products on the graph there were 17, and 32 at 70 lines, beyond what anyone can
+tell apart. **Changed:** up to 12 categories, each gets its own colour and the
+legend names every one (it now lists up to 12, not 8). Past 12, no category is
+coloured: every box is one neutral slate, its category is printed under its
+id, and the legend says why. The solid/dashed line style already carries
+same-or-different category, so nothing is lost and the picture can no longer
+disagree with itself. The demo keeps its hand-picked colours. One new test
+covers both regimes and the label.
+
+### 87. Thirty pair counts printed on the lines were unreadable
+With thirty lines, the count on each one overlapped its neighbours and the
+product boxes, so the numbers the graph exists to show could not be read.
+**Changed:** when Graphviz is installed (the container image now installs it),
+the dashboard draws the graph to SVG on the server and embeds it with a small
+script: no counts on the lines, and pointing at a line shows a translucent box
+naming both products and how many times they were seen together. The line
+under the pointer darkens, and a wide invisible copy of each line makes the
+thin dashed ones easy to hit. The box is looked up by the edge's own id, so it
+always describes the line under the pointer. Without Graphviz the page falls
+back to the old chart with counts on the lines. Two tests: the hover table
+matches the drawn edges exactly and no line carries text; a product name
+cannot close the script early.
+
+### 88. "Last update: 3649 s ago"
+After a finished replay the dashboard counted the time since the last result
+in raw seconds, which stops being readable after a minute. **Changed:** it
+now reads like a clock ("42 s ago", "6 min ago", "1 h 2 min ago", "3 days
+ago"), with a test for each step.

@@ -18,7 +18,7 @@ For work on the code itself:
 python -m venv .venv
 .venv/bin/activate                    # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements-test.txt  # includes requirements.txt
-pytest                                # 114 tests, no Kafka or MongoDB needed
+pytest                                # 127 tests, no Kafka or MongoDB needed
 ruff check . && mypy                  # the same checks CI runs
 ```
 

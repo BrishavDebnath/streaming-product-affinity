@@ -447,10 +447,11 @@ def test_dashboard_dot_generation():
         encoding="utf-8").read()
     ns = {"CATEGORY_COLOUR": {"laptop": "#2563eb", "laptop-acc": "#60a5fa",
                               "unknown": "#9ca3af"},
-          "PALETTE": ["#7c3aed", "#0891b2", "#ca8a04", "#be185d"]}
+          "PALETTE": ["#7c3aed", "#0891b2", "#ca8a04", "#be185d"],
+          "NEUTRAL_COLOUR": "#475569"}
     # Both functions the graph needs, taken straight from the page's source so
     # the test needs no Streamlit but still checks the real code.
-    for name in ("def colour_map", "def build_dot"):
+    for name in ("def colour_map", "def labels_categories", "def build_dot"):
         start = src.index(name)
         exec(src[start:src.index("st.title(")].split("\n\n\n")[0], ns)  # noqa: S102
     build_dot = ns["build_dot"]
@@ -485,7 +486,7 @@ def test_dashboard_dot_generation():
                         "pair_count": 3}]}
     styled = build_dot(mixed, cat.categories_related)
     check("related categories get a solid line, others a dashed one",
-          "n9001 -- n9003 [penwidth=6.00 color=\"#94a3b8\" style=solid" in styled
+          "n9001 -- n9003 [id=\"e0\" penwidth=6.00 color=\"#94a3b8\" style=solid" in styled
           and "n9001 -- n9011" in styled
           and styled.split("n9001 -- n9011")[1].split("\n")[0].count("dashed") == 1,
           styled)

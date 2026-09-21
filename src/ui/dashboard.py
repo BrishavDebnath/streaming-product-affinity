@@ -14,8 +14,11 @@ Products come from src.common.catalog, the same module the producer uses, so
 a click here lands in the same product space the pipeline aggregates.
 """
 
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 
@@ -56,16 +59,29 @@ PALETTE = ["#2563eb", "#059669", "#d97706", "#dc2626", "#7c3aed", "#0891b2",
            "#ca8a04", "#be185d", "#15803d", "#4338ca", "#b45309", "#0f766e"]
 
 
+# Every node gets this when there are too many categories to tell apart.
+NEUTRAL_COLOUR = "#475569"
+
+
 def colour_map(categories) -> dict:
-    """One colour per category ON THIS GRAPH.
+    """One colour per category ON THIS GRAPH - or none at all.
 
     Assigned by position in the sorted list rather than by hashing the name:
     a hash collides, and two different categories sharing a colour makes the
-    legend say something the picture does not. Demo categories keep their
-    hand-picked colours so the generated data still reads the same.
+    picture say something the data does not. For the same reason there is no
+    wrapping round the palette: a real dataset put 31 categories on one graph
+    and 12 colours made unrelated products look like one group. Past the
+    palette, every node is NEUTRAL_COLOUR and `labels_categories` tells the
+    graph to print each category inside its box instead. Demo categories keep
+    their hand-picked colours so the generated data still reads the same.
     """
     ordered = sorted(set(categories), key=lambda c: (c == "uncategorised", str(c)))
-    spare = [c for c in PALETTE if c not in CATEGORY_COLOUR.values()] + PALETTE
+    own = [c for c in ordered
+           if c not in CATEGORY_COLOUR and c and c != "uncategorised"]
+    if len(own) > len(PALETTE):
+        return dict.fromkeys(ordered, NEUTRAL_COLOUR)
+    spare = ([c for c in PALETTE if c not in CATEGORY_COLOUR.values()]
+             + [c for c in PALETTE if c in CATEGORY_COLOUR.values()])
     colours, taken = {}, 0
     for category in ordered:
         if category in CATEGORY_COLOUR:
@@ -73,9 +89,14 @@ def colour_map(categories) -> dict:
         elif not category or category == "uncategorised":
             colours[category] = CATEGORY_COLOUR["unknown"]
         else:
-            colours[category] = spare[taken % len(spare)]
+            colours[category] = spare[taken]
             taken += 1
     return colours
+
+
+def labels_categories(colours: dict) -> bool:
+    """True when colour cannot carry the category, so the label must."""
+    return len(colours) > 1 and set(colours.values()) == {NEUTRAL_COLOUR}
 
 
 # How many products get click-to-send buttons. The demo catalogue has twelve;
@@ -88,8 +109,9 @@ CLICKABLE_PRODUCTS = 12
 # page and mostly items with no data behind them.
 CHOOSABLE_PRODUCTS = 50
 
-# Legend entries. A real dataset can put dozens of categories on one graph.
-LEGEND_CATEGORIES = 8
+# Legend entries. Never fewer than the colours in use, so every colour on the
+# graph is named; a graph with more categories is not coloured at all.
+LEGEND_CATEGORIES = 12   # = len(PALETTE): past that, colours are not used
 
 COLLECTION_LABEL = {
     config.COLL_TRENDING: "Trending rows",
@@ -142,12 +164,33 @@ def api(path, quiet=False, timeout=5):
         return None
 
 
-def build_dot(graph, related=None, colours=None):
+def ago(seconds: float) -> str:
+    """'42 s ago', '6 min ago', '1 h 1 min ago'. Seconds alone stop being
+    readable after a minute: a finished replay showed '3649 s ago'."""
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds} s ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes} min ago" if minutes else f"{hours} h ago"
+    return f"{hours // 24} days ago"
+
+
+def build_dot(graph, related=None, colours=None, counts_on_lines=True):
     """
     Graphviz DOT for the co-occurrence graph.
 
-    st.graphviz_chart renders a DOT string directly, so this needs no extra
-    Python dependency - no networkx, no pyvis, no plotly.
+    Rendered by the `dot` binary into an SVG with hover boxes (graph_page), or
+    by st.graphviz_chart when that binary is missing - no Python dependency
+    either way.
+
+    `counts_on_lines` prints each pair count on its line. The hover page turns
+    it off: with thirty lines the numbers overlap each other and the boxes,
+    so there each count appears in a box when the pointer is on its line.
+    Every edge carries id="e<i>" so the page can find it again in the SVG.
 
     `related(category_a, category_b)` decides the line style: solid for
     categories the demo generator links directly, dashed for the rest. It is
@@ -163,21 +206,125 @@ def build_dot(graph, related=None, colours=None):
     for node in graph["nodes"]:
         colour = colours.get(node["category"], CATEGORY_COLOUR["unknown"])
         label = node["name"].replace('"', "'")
+        if labels_categories(colours):
+            label += "\\n" + str(node["category"]).replace('"', "'")
         lines.append(f'  n{node["id"]} [label="{label}" fillcolor="{colour}"];')
 
     affinities = [e["affinity"] for e in graph["edges"]] or [1.0]
     strongest = max(affinities) or 1.0
-    for edge in graph["edges"]:
+    for index, edge in enumerate(graph["edges"]):
         width = 1.0 + 5.0 * (edge["affinity"] / strongest)
         direct = related is None or related(category_of.get(edge["source"]),
                                             category_of.get(edge["target"]))
         style = "solid" if direct else "dashed"
+        label = (f' label="{edge["pair_count"]}" fontsize=8 fontcolor="#64748b"'
+                 if counts_on_lines else "")
         lines.append(
             f'  n{edge["source"]} -- n{edge["target"]} '
-            f'[penwidth={width:.2f} color="#94a3b8" style={style} '
-            f'label="{edge["pair_count"]}" fontsize=8 fontcolor="#64748b"];')
+            f'[id="e{index}" penwidth={width:.2f} color="#94a3b8" '
+            f'style={style}{label}];')
     lines.append("}")
     return "\n".join(lines)
+
+
+# Height of the hover graph. Fixed, because an embedded page cannot size its
+# own frame; the SVG scales to fit inside it, keeping its proportions.
+GRAPH_HEIGHT_PX = 560
+
+
+def render_svg(dot: str) -> str | None:
+    """The DOT drawn by Graphviz, or None when the binary is not installed."""
+    if not shutil.which("dot"):
+        return None
+    try:
+        done = subprocess.run(["dot", "-Tsvg"], input=dot.encode("utf-8"),  # noqa: S603, S607
+                              capture_output=True, timeout=20, check=True)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    svg = done.stdout.decode("utf-8")
+    start = svg.find("<svg")
+    if start < 0:
+        return None
+    # Let CSS size it: Graphviz writes a fixed width and height in points.
+    head, rest = svg[start:].split(">", 1)
+    head = re.sub(r'\s(width|height)="[^"]*"', "", head)
+    return head + ">" + rest
+
+
+def graph_page(svg: str, graph: dict, height: int = GRAPH_HEIGHT_PX) -> str:
+    """The SVG plus a small translucent box that names a line on hover.
+
+    Graphviz puts each edge in <g id="e<i>">; the script looks each one up in
+    a table built from the same edge list, so the box always describes the
+    line under the pointer. A wide invisible copy of every line makes thin
+    dashed ones easy to hit.
+    """
+    names = {n["id"]: n["name"] for n in graph["nodes"]}
+    info = {f"e{i}": {"a": names.get(e["source"], str(e["source"])),
+                      "b": names.get(e["target"], str(e["target"])),
+                      "n": e["pair_count"], "s": round(e["affinity"], 1)}
+            for i, e in enumerate(graph["edges"])}
+    # json.dumps output is safe inside <script> once "</" cannot close it.
+    table = json.dumps(info).replace("</", "<\\/")
+    return f"""<style>
+  body {{ margin: 0; font-family: "Source Sans Pro", sans-serif; }}
+  #graph svg {{ width: 100%; height: {height}px; display: block; }}
+  #graph .hit {{ stroke: transparent; stroke-width: 14px; fill: none;
+                 pointer-events: stroke; cursor: default; }}
+  #graph g.edge.on path:not(.hit) {{ stroke: #334155; }}
+  #tip {{ position: fixed; pointer-events: none; opacity: 0;
+          transition: opacity .12s; background: rgba(15, 23, 42, .78);
+          color: #fff; padding: 6px 10px; border-radius: 6px;
+          font-size: 13px; line-height: 1.4; white-space: nowrap;
+          backdrop-filter: blur(2px); }}
+  #tip b {{ font-weight: 600; }}
+</style>
+<div id="graph">{svg}</div>
+<div id="tip"></div>
+<script>
+const EDGES = {table};
+const tip = document.getElementById("tip");
+function show(ev, d) {{
+  tip.replaceChildren();
+  const top = document.createElement("div");
+  top.textContent = d.a + " + " + d.b;
+  const count = document.createElement("b");
+  count.textContent = "Seen together " + d.n.toLocaleString() + " times";
+  tip.append(top, count);
+  const x = ev.clientX + 14, y = ev.clientY + 14;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = (x + w > innerWidth ? ev.clientX - w - 10 : x) + "px";
+  tip.style.top = (y + h > innerHeight ? ev.clientY - h - 10 : y) + "px";
+  tip.style.opacity = 1;
+}}
+document.querySelectorAll("#graph g.edge").forEach(g => {{
+  const d = EDGES[g.id];
+  if (!d) return;
+  g.querySelectorAll("title").forEach(t => t.remove());
+  g.querySelectorAll("a").forEach(a => a.removeAttribute("xlink:title"));
+  const line = g.querySelector("path");
+  if (line) {{
+    const hit = line.cloneNode();
+    hit.removeAttribute("stroke-dasharray");
+    hit.setAttribute("class", "hit");
+    g.appendChild(hit);
+  }}
+  g.addEventListener("mousemove", ev => {{ g.classList.add("on"); show(ev, d); }});
+  g.addEventListener("mouseleave", () => {{
+    g.classList.remove("on"); tip.style.opacity = 0; }});
+}});
+</script>"""
+
+
+def embed(page: str, height: int) -> None:
+    """An HTML page in a frame. st.iframe replaced components.html in
+    Streamlit 1.5x; older installs still have only the latter. The page is
+    built here from the API's own rows, never from user input."""
+    if hasattr(st, "iframe"):
+        st.iframe(page, height=height)
+    else:                                               # pragma: no cover
+        import streamlit.components.v1 as components
+        components.html(page, height=height)
 
 
 st.title("Streaming Product Affinity Pipeline")
@@ -228,7 +375,7 @@ else:
     m1.metric("Processing delay", "-",
               help="Shown once the first one-minute window has ended.")
 if pipe and pipe.get("staleness_seconds") is not None:
-    m2.metric("Last update", f"{pipe['staleness_seconds']:.0f} s ago",
+    m2.metric("Last update", ago(pipe["staleness_seconds"]),
               help="Time since Spark last saved any results.")
 else:
     m2.metric("Last update", "-")
@@ -377,8 +524,7 @@ st.subheader("Products viewed together")
 # catalogue from a real dataset has only the category an item belongs to, so
 # the caption must not claim knowledge the data does not contain.
 st.caption("Each line joins two products viewed in the same shopping session. "
-           "Thicker lines mean a stronger link; the number is how many times "
-           "the pair was seen. "
+           "Thicker lines mean a stronger link. "
            + ("Solid lines join categories that go together (a laptop and a "
               "laptop sleeve); dashed lines join categories that do not (shoes "
               "and a phone) - shoppers wandering, which the demo data does in "
@@ -411,9 +557,18 @@ if graph and graph["edges"]:
     graph_colours = colour_map(n["category"] for n in graph["nodes"])
     gcol, lcol = st.columns([3, 1])
     with gcol:
-        st.graphviz_chart(
-            build_dot(graph, catalog.categories_related, graph_colours),
-            width="stretch")
+        svg = render_svg(build_dot(graph, catalog.categories_related,
+                                   graph_colours, counts_on_lines=False))
+        if svg:
+            embed(graph_page(svg, graph), height=GRAPH_HEIGHT_PX + 10)
+            st.caption("Point at a line to see how many times the pair was "
+                       "seen together.")
+        else:
+            st.graphviz_chart(
+                build_dot(graph, catalog.categories_related, graph_colours),
+                width="stretch")
+            st.caption("The number on each line is how many times the pair "
+                       "was seen together.")
     with lcol:
         st.metric("Products shown", graph["node_count"])
         st.metric("Lines drawn", graph["edge_count"])
@@ -423,6 +578,11 @@ if graph and graph["edges"]:
         st.markdown("**Categories**")
         shown = sorted({n["category"] for n in graph["nodes"]},
                        key=lambda c: (c == "uncategorised", c))
+        if labels_categories(graph_colours):
+            st.caption(f"{len(shown)} categories - too many to tell apart by "
+                       "colour, so each product's category is printed under "
+                       "its id.")
+            shown = []
         for category in shown[:LEGEND_CATEGORIES]:
             st.markdown(
                 f'<span style="color:{graph_colours[category]};'

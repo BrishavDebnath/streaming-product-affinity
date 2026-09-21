@@ -7,16 +7,9 @@
 [![Spark 4.1](https://img.shields.io/badge/spark-4.1-e25a1c)](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
-*A streaming data-engineering project: Kafka 4 -> Spark 4 Structured Streaming
--> MongoDB -> FastAPI. It finds products that shoppers view together in the
-same session, using co-occurrence statistics - no machine learning yet. See
-[Scope](#scope) before reading further.*
+A streaming data pipeline built on Kafka 4, Spark 4 Structured Streaming, MongoDB and FastAPI. It finds products that shoppers look at together in the same visit, using co-occurrence counts. There is no machine learning in it yet, and the [Scope](#scope) section says exactly what it does and doesn't claim.
 
-Clickstream events flow through **Kafka** into **Spark Structured Streaming**,
-which computes windowed **trending products** and **co-viewed product pairs**
-("shoppers who viewed A in a session also viewed B"), writes them idempotently
-to **MongoDB**, and serves them over **FastAPI** with a **Streamlit**
-dashboard and **Prometheus/Grafana** monitoring.
+Click events go into Kafka. Spark reads them and keeps two running results: trending products per minute, and pairs of products viewed in the same session ("people who looked at A also looked at B"). Both are written to MongoDB in a way that can be safely repeated. FastAPI serves them, a Streamlit dashboard shows them, and Prometheus and Grafana watch the whole thing.
 
 ```mermaid
 flowchart LR
@@ -37,52 +30,32 @@ flowchart LR
     A -->|/metrics| PR[Prometheus + alerts] --> G[Grafana]
 ```
 
-Every box is a container. One `docker compose up` starts them all.
-
----
+Each box is a container, and one `docker compose up` starts all of them.
 
 ## Scope
 
-This is a **streaming data-engineering** project. The "related products"
-layer is deliberately simple: session-scoped co-occurrence ranked by affinity,
-lift or PMI - the same family as classic item-to-item "viewed together"
-features.
+This is a data engineering project first. The "related products" part is kept simple on purpose: pairs of products seen in the same session, ranked by affinity, lift or PMI. It's the same idea as the classic "frequently viewed together" strip on a shop page.
 
-What it does **not** do, and does not claim to:
+It doesn't do personalisation. `/related-products/{product_id}` answers "what goes with this item", not "what should this particular shopper see next". There's no model of the user, which is why nothing here is called a recommendation engine.
 
-- **No personalisation.** `/related-products/{product_id}` answers "what goes
-  with this item", not "what should *this shopper* see next". There is no user
-  model, so nothing here is called a recommendation.
-- **No machine learning.** Lift is a statistic, not a trained model. ML is
-  planned - see [Roadmap](#roadmap).
-- **Evaluation needs the real dataset.** On the generated traffic there is
-  nothing honest to measure - the ground truth would be the generator's own
-  affinity table. Hit-rate@10 is measured on real RetailRocket clickstream
-  instead, which is a download away: see
-  [Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
+It doesn't use machine learning either. Lift is a statistic, not a trained model. ML is planned, see the [Roadmap](#roadmap).
 
-The engineering is where the work is: bounded streaming state, idempotent
-writes, dead-letter handling, schema-version coexistence, and a tested
-transform layer. Those are all demonstrated and measured below.
+Measuring quality needs real data. The generated demo traffic has nothing honest to measure, because the right answer would just be the generator's own rules. So hit-rate@10 is measured on the real RetailRocket clickstream, which you can download for free: see [Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
+
+Most of the work went into the streaming side. Spark's memory stays bounded, writes are idempotent, bad events are kept instead of dropped, two event formats run side by side, and the transform code is tested. All of that is shown and measured below.
 
 ## Demo
 
 ![Pipeline health: 1.3 s processing delay, about 20 events/s, events per minute over the last 30 minutes](docs/screenshots/pipeline-health.png)
 
-*Pipeline health, read back from what Spark saved - not from the producer's own
-counter.*
+*Pipeline health. These numbers are read back from what Spark actually saved, not from the producer's own counter.*
 
 ![Affinity graph: products joined by how often they were viewed in the same session](docs/screenshots/affinity-graph.png)
 
-*Products viewed in the same session. Solid lines join categories that belong
-together, dashed lines are shoppers wandering. The pipeline is never told the
-categories, yet it recovers them: shoes form their own island because the demo
-traffic never sends a shoe shopper to electronics on purpose, and every dashed
-link in this picture (at most 580 co-views) is weaker than every solid one
-(at least 1,319).*
+*Products viewed in the same session. Solid lines join categories that belong together and dashed lines are shoppers wandering off. The pipeline is never told the categories, and it still finds them. The shoes end up on their own island because the demo traffic never sends a shoe shopper to electronics on purpose. Every dashed line in this picture (580 co-views at most) is weaker than every solid one (at least 1,319).*
 
 <details>
-<summary><b>The whole dashboard</b> - products you can click, trending, related products and the graph</summary>
+<summary><b>The whole dashboard</b>: products you can click, trending, related products and the graph</summary>
 
 ![The full dashboard](docs/screenshots/dashboard.png)
 
@@ -92,21 +65,17 @@ link in this picture (at most 580 co-views) is weaker than every solid one
 
 | | |
 |---|---|
-| **Docker Desktop** (or Docker Engine with Compose v2.24+) | runs everything |
-| **Git** | to clone the repository |
-| **Python 3.11 or 3.12** *(optional)* | only to run scripts or the full test suite directly on your machine |
+| Docker Desktop (or Docker Engine with Compose v2.24+) | runs everything |
+| Git | to clone the repository |
+| Python 3.11 or 3.12 *(optional)* | only needed to run the scripts or the full test suite on your own machine |
 
-Give Docker at least **8 GB of memory** (Docker Desktop on Windows uses half
-your RAM by default). The Spark driver is set to 4 GB and MongoDB's cache to
-1 GB. The first build downloads the Spark 4.1 image, the Kafka connector JARs
-and the Python packages, so expect several minutes.
+Give Docker at least 8 GB of memory. Docker Desktop on Windows takes half your RAM by default. The Spark driver is set to 4 GB and MongoDB's cache to 1 GB. The first build downloads the Spark 4.1 image, the Kafka connector JARs and the Python packages, so expect it to take several minutes.
 
-Ports used: `8501` dashboard, `8000` API, `3000` Grafana, `9090` Prometheus,
-`4040` Spark UI, `9092` Kafka, `27018` MongoDB.
+Ports used: `8501` dashboard, `8000` API, `3000` Grafana, `9090` Prometheus, `4040` Spark UI, `9092` Kafka, `27018` MongoDB.
 
 ## Quick start
 
-The same commands work in PowerShell, macOS and Linux.
+These commands are the same in PowerShell, macOS and Linux.
 
 ```bash
 git clone https://github.com/BrishavDebnath/streaming-product-affinity.git
@@ -114,15 +83,12 @@ cd streaming-product-affinity
 docker compose up -d --build
 ```
 
-That starts, in order:
+That starts things in this order:
 
-1. **Kafka** and **MongoDB**, then **kafka-init**, which creates the
-   `clickstream` topic with 6 partitions.
-2. The **Spark** job, the **API** and **Prometheus/Grafana**.
-3. **seed** - backfills 20 minutes of past sessions (skipped if MongoDB already
-   has results), so the dashboard is not empty.
-4. The **producer** - live synthetic traffic, about 20 events/s - and the
-   **dashboard**.
+1. Kafka and MongoDB, then `kafka-init`, which creates the `clickstream` topic with 6 partitions.
+2. The Spark job, the API, Prometheus and Grafana.
+3. `seed`, which fills in 20 minutes of past sessions so the dashboard isn't empty. It skips itself if MongoDB already has results.
+4. The producer, which sends live synthetic traffic at about 20 events a second, and the dashboard.
 
 Then open:
 
@@ -134,13 +100,7 @@ Then open:
 | Prometheus (targets, alerts) | http://localhost:9090 |
 | Spark UI | http://localhost:4040 |
 
-**Expect trending within a minute and live product pairs after about five.**
-The stream-stream join holds its output back by `CO_VIEW_GAP`, so a pair is
-saved only once events arrive roughly `COOCCURRENCE_WINDOW + CO_VIEW_GAP +
-WATERMARK` later (1 + 2 + 2 minutes by default). Raising the gap to 10 minutes
-pushes that to ~17 minutes; this was measured on Spark 3.5 and 4.1, not
-estimated. Keep the producer running: windows only close when newer events
-arrive.
+Trending shows up within a minute. Product pairs take about five. The join holds its output back by `CO_VIEW_GAP`, so a pair is only saved once events arrive roughly `COOCCURRENCE_WINDOW + CO_VIEW_GAP + WATERMARK` later, which is 1 + 2 + 2 minutes with the defaults. Raising the gap to 10 minutes pushes that to about 17 minutes. Those timings were measured on Spark 3.5 and 4.1, not estimated. Keep the producer running, because windows only close when newer events arrive.
 
 ## Everyday commands
 
@@ -155,19 +115,13 @@ arrive.
 | Stop, keep data | `docker compose down` |
 | Stop and delete all data | `docker compose down -v` |
 
-Settings live in `.env` (copy `.env.example`); every value has a default.
-After changing one, run `docker compose up -d` again. Changing
-`KAFKA_PARTITIONS`, `SHUFFLE_PARTITIONS`, `STATE_STORE` or a window size needs
-a fresh start (`docker compose down -v`), because Spark will not resume from a
-checkpoint whose plan has changed.
+Settings live in `.env` (copy `.env.example` to start). Every value has a default. After changing one, run `docker compose up -d` again. Changing `KAFKA_PARTITIONS`, `SHUFFLE_PARTITIONS`, `STATE_STORE` or a window size needs a clean start with `docker compose down -v`, because Spark won't resume from a checkpoint whose plan has changed.
 
-A `Makefile` wraps the same commands for macOS and Linux (`make up`,
-`make smoke`, `make test`, `make loadtest`, ...).
+On macOS and Linux there's also a `Makefile` with the same commands (`make up`, `make smoke`, `make test`, `make loadtest` and so on).
 
-### Running scripts on your machine (optional)
+### Running the scripts on your own machine (optional)
 
-Only needed for development. The containers already publish Kafka on
-`localhost:9092` and MongoDB on `localhost:27018`.
+You only need this for development. The containers already expose Kafka on `localhost:9092` and MongoDB on `localhost:27018`.
 
 ```bash
 python -m venv .venv
@@ -178,18 +132,11 @@ cp .env.example .env              # Windows: copy .env.example .env
 python scripts/smoke_test.py
 ```
 
-Running the unit tests natively needs Java 17+ as well:
-`pip install -r requirements-test.txt`, then `python tests/test_transforms.py`.
-
----
+To run the unit tests outside Docker you also need Java 17 or newer. Then `pip install -r requirements-test.txt` and `python tests/test_transforms.py`.
 
 ## How product pairs are found
 
-The core is a **stream-stream self-join** on the browsing session
-(`session_id`), constrained so both events fall within `CO_VIEW_GAP` of each
-other. It originally joined on `user_id`; with users continuously active that
-paired everything with everything ([ADR 0002](docs/adr/0002-session-keyed-cooccurrence.md)).
-Events without a session id fall back to a key derived from the user.
+At the centre is a stream-stream self-join on the browsing session (`session_id`). Two events only join if they happened within `CO_VIEW_GAP` of each other. The first version joined on `user_id` instead, and because the simulated users are always active, that paired everything with everything ([ADR 0002](docs/adr/0002-session-keyed-cooccurrence.md)). Events with no session id fall back to a key built from the user.
 
 ```python
 left.join(right,
@@ -199,98 +146,50 @@ left.join(right,
     & (col("r_time") <= col("l_time") + expr("INTERVAL 2 minutes")))
 ```
 
-Four details matter:
+Four details matter here.
 
-- **The time constraint is what bounds the join state.** Without it Spark must
-  retain every event forever, in case a future event joins to it. It also
-  delays output by the same amount, which is why the gap is kept short.
-- **`l_product < r_product`** means (A,B) and (B,A) are one row. The mirror is
-  written at sink time so a lookup on either product finds it.
-- **Weak pairs are hidden.** A pair seen fewer than `MIN_PAIR_COUNT` (3)
-  times in the lookback is left out of related products and the graph.
-- **Pairs are weighted, not counted.** A `purchase` is worth 5.0 and a `search`
-  0.5 (`config.EVENT_WEIGHTS`); pair affinity is the geometric mean, so one
-  strong plus one weak signal ranks below two strong ones.
+The time limit is what keeps Spark's memory bounded. Without it Spark would have to keep every event forever in case a later one joins to it. It also delays the output by the same amount, which is why the gap is short.
+
+`l_product < r_product` means (A, B) and (B, A) are stored as one row. The mirror copy is written at the sink, so looking up either product finds the pair.
+
+Weak pairs are hidden. A pair seen fewer than `MIN_PAIR_COUNT` times (3 by default) in the lookback is left out of related products and the graph.
+
+Pairs are weighted by what the shopper did. A `purchase` is worth 5.0 and a `search` 0.5 (`config.EVENT_WEIGHTS`). A pair's affinity is the geometric mean of its two weights, so one strong signal plus one weak one ranks below two strong ones.
 
 ### Where the structure in the demo data comes from
 
-The data is synthetic, and its structure is **designed**, not discovered.
-`catalog.session_products` generates each visit: the first product is random,
-and each further product comes from a related category (`AFFINITY` in
-`src/common/catalog.py`: laptops with laptop accessories, phones with phone
-accessories and audio, footwear with footwear) - or, with probability
-`CROSS_CATEGORY_RATE` (15%), from any category, because real shoppers wander.
+The demo data is synthetic, and its structure was put there on purpose. `catalog.session_products` generates each visit. The first product is random. Each one after that comes from a related category, as set out in `AFFINITY` in `src/common/catalog.py`: laptops go with laptop accessories, phones with phone accessories and audio, and footwear with footwear. With probability `CROSS_CATEGORY_RATE` (15%) the next product comes from any category instead, because real shoppers wander.
 
-The streaming job knows nothing about categories. It only sees which products
-appeared in the same session, so the clusters on the dashboard are the
-pipeline **rediscovering** a rule that was put into the data - a known-answer
-test of the pipeline, not a finding about shoppers. With 15% wandering,
-simulated related pairs score a lift of about 6-14 and chance pairs about
-0.7-3.5, which is exactly the separation lift is meant to provide. For real
-clickstream instead of a rediscovered rule, see
-[Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
+The streaming job knows nothing about categories. All it sees is which products turned up in the same session. So the clusters on the dashboard are the pipeline finding a rule that was planted in the data. That makes it a test with a known answer, not a discovery about how people shop. With 15% wandering, related pairs get a lift of about 6 to 14 and chance pairs about 0.7 to 3.5, which is the kind of gap lift is supposed to show. For real clickstream data, see [Real traffic](#real-traffic-and-whether-the-recommendations-are-any-good).
 
-Uniform random events would make every pair equally likely and leave nothing
-to find; `docker compose run --rm smoke` checks that laptops really do pair
-with laptop sleeves.
-
----
+If events were uniformly random, every pair would be equally likely and there'd be nothing to find. `docker compose run --rm smoke` checks that laptops really do pair up with laptop sleeves.
 
 ## Bounded state
 
-Every stateful operation is windowed. This is not stylistic. A streaming
-aggregation grouped only by business keys retains state for every key it has
-ever seen — the watermark cannot evict it, because `event_time` is not part of
-the grouping key. Measured on a rate source at 200 rows/s:
+Every stateful step in the job is windowed. It has to be. If a streaming aggregation groups only by business keys, Spark keeps state for every key it has ever seen. The watermark can't clear it, because `event_time` isn't part of the grouping key. Here's what that looks like on a rate source at 200 rows a second:
 
 | | state rows over time |
 |---|---|
-| `groupBy("user_id", "product_id")` — no window | 0 → 1600 → 2400 → **3200** in 12 s, growing linearly |
-| `groupBy(window(event_time, ...), key)` | **flat at 100** across 45 s |
+| `groupBy("user_id", "product_id")`, no window | 0, 1600, 2400, then **3200** after 12 s, growing in a straight line |
+| `groupBy(window(event_time, ...), key)` | **flat at 100** for 45 s |
 
-The first is a slow memory leak that looks fine in a five-minute demo and
-takes the job down in production.
+The first one is a slow memory leak. It looks fine in a five-minute demo and takes the job down in production.
 
-`tests/test_transforms.py` asserts `numRowsTotal` stays bounded in a real
-streaming query.
-
----
+`tests/test_transforms.py` checks that `numRowsTotal` stays bounded in a real streaming query.
 
 ## Correctness properties
 
-**Idempotent writes.** Both aggregate sinks upsert on a natural key —
-`(window_start, window_end, product_id)` for trending, and the same plus
-`related_product_id` for pairs — so replaying a batch after a failure
-converges rather than duplicating. Unique indexes enforce this at the database
-level too. The dead-letter sink appends instead: a rejected payload is
-evidence of one delivery, and two deliveries of the same broken event are two
-facts worth keeping.
+**Idempotent writes.** Both aggregate sinks upsert on a natural key. For trending that's `(window_start, window_end, product_id)`, and for pairs it's the same plus `related_product_id`. So if a batch is replayed after a failure, the result converges instead of doubling up. Unique indexes enforce this in the database as well. The dead-letter sink is the exception and appends. A rejected payload is evidence of one delivery, and two deliveries of the same broken event are two facts worth keeping.
 
-**Nothing is silently dropped.** Events failing validation are routed to a
-dead-letter collection with the reason and the original payload, instead of
-becoming nulls. The producer emits malformed events at `MALFORMED_RATE` so the
-path is continuously exercised.
+**Nothing is silently dropped.** Events that fail validation go to a dead-letter collection along with the reason and the original payload. They don't turn into nulls. The producer sends malformed events on purpose, at `MALFORMED_RATE`, so this path is always being exercised.
 
-**Exactly-once results across a crash.** `docker compose run --rm recovery`
-kills the Spark container mid-stream with SIGKILL, restarts it, and checks
-that every event Kafka acknowledged was counted exactly once. Spark resumes
-from the offsets and state in its checkpoint; a batch cut short by the kill is
-re-run, and the upserts make the re-run harmless.
+**Exactly-once results across a crash.** `docker compose run --rm recovery` kills the Spark container mid-stream with SIGKILL, restarts it, and checks that every event Kafka acknowledged was counted exactly once. Spark picks up from the offsets and state in its checkpoint. A batch cut short by the kill runs again, and the upserts make that harmless.
 
-**Cold start is answered explicitly.** A product with no co-occurrence data
-yet returns trending products, and the response says
-`"source": "trending_fallback"` rather than pretending the two are the same.
-
----
+**Cold start is handled openly.** A product with no pair data yet gets trending products back, and the response says `"source": "trending_fallback"` so nobody mistakes one for the other.
 
 ## Real traffic, and whether the recommendations are any good
 
-The demo generator proves the pipeline works; it cannot prove the
-recommendations are useful, because the structure it finds is the structure
-that was put there. So the same pipeline also runs on
-[RetailRocket](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset):
-2.7M real events (views, add-to-carts, transactions) from a real shop over four
-and a half months.
+The demo generator proves the pipeline works. It can't prove the results are useful, because the pattern it finds is the one that was put there. So the same pipeline also runs on [RetailRocket](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset): 2.7M real events (views, add-to-carts and purchases) from a real online shop over four and a half months.
 
 ```bash
 pip install -r requirements-data.txt
@@ -299,112 +198,50 @@ docker compose run --rm replay --days 30  # a month of real traffic, in ~10 minu
 docker compose run --rm evaluate --train-days 30 --test-days 7
 ```
 
-`--train-days` must match the replay's `--days`: the evaluation reads the
-manifest the replay wrote and refuses any other window, because testing on
-days the pipeline was trained on inflates the score instead of erroring.
+`--train-days` has to match the replay's `--days`. The replay writes down what it sent, and the evaluation refuses to score any other window. Testing on days the pipeline was trained on would inflate the score without any error.
 
-Three things have to happen for real data to work here, and each one is a
-decision rather than a detail ([ADR 0011](docs/adr/0011-real-data-and-evaluation.md)):
+Four things had to be decided to make real data work ([ADR 0011](docs/adr/0011-real-data-and-evaluation.md)):
 
-- **Visits, not visitors.** RetailRocket has no session id. Events are cut into
-  visits at 30 minutes of inactivity, so two products a shopper saw three weeks
-  apart are never treated as viewed together.
-- **The replay's own clock.** The events are from 2015; replayed as-is, every
-  window would land outside the API's lookback and the dashboard would look
-  broken. Timestamps are mapped onto the replay's clock, keeping order and
-  relative spacing, compressed by a fixed factor (~2000x for a week in five
-  minutes). The replay prints the factor and warns if visits become shorter
-  than the co-view gap.
-- **Real labels.** RetailRocket hashes its item properties, so there are no
-  product names. The catalogue built for a replay says `Item 214536500`,
-  `cat-1037`. Inventing names would make the screenshots prettier and the
-  project dishonest.
-- **Closing the last windows.** A watermark moves on event time, and during a
-  replay nothing else produces any. So the replay ends by sending a few events
-  timestamped past the end of the slice - one reserved product id, one session
-  each, so they can form no pair - and deletes their own rows afterwards.
-  Without them the last two minutes of a five-minute replay would never be
-  counted.
+- **Visits, not visitors.** RetailRocket has no session id, so events are split into visits after 30 minutes of inactivity. Two products a shopper looked at three weeks apart are never counted as viewed together.
+- **The replay's own clock.** The events are from 2015. Replayed as they are, every window would fall outside the API's lookback and the dashboard would look broken. So the timestamps are moved onto the replay's clock, keeping their order and spacing and squeezing them by a fixed factor (about 2000x for a week in five minutes). The replay prints the factor and warns if visits get shorter than the co-view gap.
+- **Real labels.** RetailRocket hashes its item properties, so there are no product names. The catalogue built for a replay says `Item 214536500` and `cat-1037`. Made-up names would make the screenshots prettier and the project dishonest.
+- **Closing the last windows.** A watermark only moves forward with event time, and during a replay nothing else produces any. So the replay ends by sending a few events timestamped after the end of the slice. They all use one reserved product id and each has its own session, so they can't form a pair, and the replay deletes their rows afterwards. Without them, the last two minutes of a five-minute replay would never be counted.
 
-**How it is scored.** Train on the replayed days; test on the days after, which
-the pipeline has never seen. For each held-out visit, the model gets the first
-product and returns ten; a hit is when the product the shopper actually viewed
-**next** is among them. The baseline answers every query with the ten
-most-viewed products of the training period — what a shop does with no
-recommender at all. Both get identical test cases, and the pipeline's answers
-come from the live `/related-products` endpoint, not a re-implementation.
+**How it's scored.** Train on the replayed days and test on the days after, which the pipeline has never seen. For each held-out visit, the pipeline is given the first product and returns ten. It scores a hit if the product the shopper actually viewed next is among those ten. The baseline answers every question with the ten most-viewed products from the training period, which is what a shop shows when it has no recommender at all. Both get exactly the same test cases, and the pipeline's answers come from the live `/related-products` endpoint, not a separate copy of the logic.
 
-**Measured**, on 3,000 held-out visits: 30 days of RetailRocket traffic
-(617,109 events) replayed through Kafka, tested on the following 7 days.
+Measured on 3,000 held-out visits, with 30 days of RetailRocket traffic (617,109 events) replayed through Kafka and the following 7 days used for testing:
 
 | | hit-rate@10 | Coverage | vs baseline |
 |---|---:|---:|---:|
 | **Pipeline**, co-occurrence only | **19.7%** | 64% | **26.9x** |
 | Pipeline, as the API serves it (with fallback) | 17.4% | 89% | 23.8x |
-| Bestsellers (top 10 of the training month) | 0.73% | 100% | — |
+| Bestsellers (top 10 of the training month) | 0.73% | 100% | n/a |
 
-Coverage — the share of queries that got a real co-occurrence answer rather
-than the trending fallback — is reported next to the hit-rate, because an
-average that hides it is not an honest number. The two pipeline rows are a
-precision/coverage trade, not a ranking: the model itself is worth 19.7% on
-the 64% of queries it can answer, and the product is worth 17.4% because it
-answers 89% of them. The figure is conservative either way — 1,068 of the
-3,000 query products had no pairs in the training month at all, and every one
-counts as a miss for the pipeline while the bestseller list still answers.
+Coverage is the share of questions that got a real co-occurrence answer instead of the trending fallback. It sits next to the hit-rate because an average that hides it isn't an honest number. The two pipeline rows trade precision for coverage. The co-occurrence model is right 19.7% of the time on the 64% of questions it can answer, and the API as a whole scores 17.4% because it answers 89% of them. Either way the figure is on the cautious side. 1,068 of the 3,000 query products had no pairs at all in the training month, and every one of them counts as a miss for the pipeline while the bestseller list still gets to answer.
 
-Evaluating a different window than the one replayed would score the pipeline
-on its own training days: `scripts/replay.py` records what it sent and
-`scripts/evaluate.py` refuses the mismatch, because that mistake reads as a
-**35.1%** hit-rate rather than an error ([defect 85](DEFECTS_FIXED.md)).
-Details, and what the number does not claim, in
-[docs/EVALUATION.md](docs/EVALUATION.md); the raw run is in
-`results/evaluation.json` (written locally; `results/` is git-ignored).
-
----
+Scoring a different window from the one replayed would test the pipeline on its own training days. `scripts/replay.py` records what it sent and `scripts/evaluate.py` refuses a mismatch, because that mistake shows up as a 35.1% hit-rate and not as an error ([defect 85](DEFECTS_FIXED.md)). [docs/EVALUATION.md](docs/EVALUATION.md) has the details and what the number doesn't claim. The raw run is saved locally in `results/evaluation.json`, and `results/` is git-ignored.
 
 ## Measured performance
 
-Measured on an 8-core i5-13450HX with 12 GB of memory given to Docker, with
-Kafka, Spark, MongoDB and the load generator all sharing those cores. Full
-results, and how to reproduce them: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Measured on an 8-core i5-13450HX with 12 GB of memory given to Docker. Kafka, Spark, MongoDB and the load generator all share those cores. Full results and how to reproduce them are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-- **15,000 events/s sustained.** Spark read every event, the backlog stayed
-  flat and cleared 16 s after the load stopped. At 20,000 events/s it falls
-  behind: batches take 15.6 s against a 10 s trigger.
-- **An event reaches its trending row in about 8 s** (median) at 2,500-5,000
-  events/s, and in 15 s at the 95th percentile at 15,000 events/s. Most of
-  that is the wait for the next 10 s trigger.
-- **A product pair appears about 5 minutes after the events**, by design: its
-  window, the co-view gap and the watermark all have to pass first.
-- **Crash recovery:** Spark killed with SIGKILL under load wrote its first new
-  result 12 s after restarting and cleared the 38,471-event backlog 15 s after
-  restarting. All 120,224 events were counted exactly once - none lost, none
-  double-counted.
-- **The co-occurrence join held 4.7M events at 15,000 events/s** and stayed
-  bounded: RocksDB keeps that off the JVM heap, and the 2-minute co-view gap
-  is what caps it (`results/load_test.csv`).
+- **15,000 events/s sustained.** Spark read every event, the backlog stayed flat, and it cleared 16 s after the load stopped. At 20,000 events/s it falls behind, with batches taking 15.6 s against a 10 s trigger.
+- **About 8 s from event to trending row** (median) at 2,500 to 5,000 events/s, and 15 s at the 95th percentile at 15,000 events/s. Most of that is waiting for the next 10 s trigger.
+- **About 5 minutes from events to product pair.** That's by design, since the window, the co-view gap and the watermark all have to pass first.
+- **Crash recovery.** With Spark killed by SIGKILL under load, it wrote its first new result 12 s after restarting and cleared the 38,471-event backlog 15 s after restarting. All 120,224 events were counted exactly once, with none lost and none counted twice.
+- **4.7M events held in the join at 15,000 events/s**, and still bounded. RocksDB keeps that off the JVM heap, and the 2-minute co-view gap is what caps it (`results/load_test.csv`).
 
-Two scripts produce these numbers against the running stack:
+Two scripts produce these numbers against the running stack.
 
-- **`loadtest`** ramps the event rate (2,500 to 20,000 events/s by default,
-  90 s each) with six producer processes sending realistic sessions. For
-  each step it records what Spark itself reported (events read, batch time,
-  unread backlog) and whether Spark kept up: the backlog must not climb during
-  the step and must clear within two trigger intervals afterwards. Probe
-  events with unique product ids time the path from sending an event to its
-  row appearing in MongoDB.
-- **`recovery`** kills Spark under load and measures how quickly it resumes
-  and whether any event was lost or double-counted.
+`loadtest` ramps the event rate (2,500 to 20,000 events/s by default, 90 s per step) using six producer processes that send realistic sessions. For each step it records what Spark itself reported (events read, batch time, unread backlog) and whether Spark kept up. Keeping up means the backlog doesn't climb during the step and clears within two trigger intervals after it. Probe events with unique product ids time the trip from sending an event to its row showing up in MongoDB.
 
-Everything shares one machine's cores, so the figures describe a laptop, not
-a cluster. See [ADR 0010](docs/adr/0010-measuring-the-pipeline.md) for why
-the measurements are taken this way.
+`recovery` kills Spark under load and measures how fast it comes back and whether any event was lost or counted twice.
 
----
+Everything runs on one machine's cores, so these figures describe a laptop, not a cluster. [ADR 0010](docs/adr/0010-measuring-the-pipeline.md) explains why the measurements are taken this way.
 
-## Tested
+## Tests
 
-**123 tests, no Kafka and no MongoDB needed**, in four groups:
+There are 127 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
 
 | What | How | Where it runs |
 |---|---|---|
@@ -413,79 +250,47 @@ the measurements are taken this way.
 | The dashboard | Streamlit's `AppTest` runs the real page against the real API | `pytest tests/test_dashboard.py` |
 | The real-data path | sessions, replay timing and the evaluation, plus the whole evaluation script over a fake pair table | `pytest tests/test_data.py` |
 
-The Spark group is also a script: `spark-submit tests/test_transforms.py`
-runs it inside the Spark container with no pytest installed, reporting its
-**172 individual checks**. `pytest` turns any failed check into a failed test,
-so both routes agree. The Spark group starts a JVM and one Python process per
-core, so give it a couple of free gigabytes - on a laptop already running the
-stack, prefer the container route.
+The Spark group also runs as a plain script. `spark-submit tests/test_transforms.py` runs it inside the Spark container without pytest and reports its 172 individual checks. `pytest` turns any failed check into a failed test, so both routes agree. The Spark group starts a JVM and one Python process per core, so leave it a couple of gigabytes free. On a laptop that's already running the stack, use the container route.
 
 What the tests cover:
 
-- parsing, type coercion, weighting, and rejection reasons
-- garbage payloads route to the DLQ rather than crashing the job
-- trending counts, weighted scores, distinct users, window separation
-- co-occurrence finds co-viewed pairs, ignores events outside the gap, never
-  pairs a product with itself, and never pairs two different users
-- a **genuine streaming query** — file source → watermark → stream-stream
-  join → windowed aggregation → memory sink — asserting the pair is emitted,
-  that counts aggregate across users, and that state stays bounded
-- ten minutes of steady sessions, showing the join state stops growing once
-  the co-view gap and watermark have passed
-- lift and PMI maths, and that pairs with an undefined lift rank below real ones
-- the monitoring listener can be built, reads Spark's progress objects, and
-  measures Kafka lag against the broker rather than Spark's planning snapshot
-- sinks stamp rows at the moment they are written, in bounded chunks, and
-  their writers can be shipped to Spark's Python workers
-- the benchmark helpers: percentiles, the kept-up rule, report sections, and
-  Docker's timestamps
-- the dashboard reads only fields the API actually returns
-- the session-generation rule, the RocksDB state store, and that Compose
-  starts every service in a safe order with Prometheus loading its alerts
-- the real-data path: a returning visitor is a new visit, replayed timestamps
-  keep their order and spacing, replaying a slice twice produces the same event
-  ids, a recommender that echoes the query back never scores, an empty answer
-  is a miss rather than a skipped case, and a deliberately wrong model comes
-  out below the bestseller baseline
+- parsing, type conversion, weighting and the reasons events get rejected
+- garbage payloads going to the dead-letter queue without crashing the job
+- trending counts, weighted scores, distinct users and window separation
+- co-occurrence finding co-viewed pairs, ignoring events outside the gap, never pairing a product with itself and never pairing two different users
+- a real streaming query (file source, watermark, stream-stream join, windowed aggregation, memory sink) that checks the pair comes out, that counts add up across users, and that state stays bounded
+- ten minutes of steady sessions, showing the join state stops growing once the co-view gap and watermark have passed
+- the lift and PMI maths, and pairs with an undefined lift ranking below real ones
+- the monitoring listener, which reads Spark's progress objects and measures Kafka lag against the broker instead of Spark's planning snapshot
+- sinks stamping rows when they're written, in bounded chunks, with writers that can be shipped to Spark's Python workers
+- the benchmark helpers: percentiles, the kept-up rule, report sections and Docker's timestamps
+- the dashboard reading only fields the API actually returns, never giving two categories the same colour, and showing pair counts on hover
+- the session generation rule, the RocksDB state store, and Compose starting every service in a safe order with Prometheus loading its alerts
+- the real-data path: a returning visitor is a new visit, replayed timestamps keep their order and spacing, replaying a slice twice gives the same event ids, a recommender that echoes the question back never scores, an empty answer counts as a miss, a deliberately wrong model scores below the bestseller baseline, and an evaluation that would test on training days is refused
 
-The transforms are pure `DataFrame -> DataFrame` functions in
-`src/streaming/transforms.py` precisely so this is possible. Streaming logic
-that can only be verified by watching a dashboard cannot be refactored safely.
+The transforms are pure `DataFrame` in, `DataFrame` out functions in `src/streaming/transforms.py`, and that's what makes all of this testable. Streaming logic you can only check by watching a dashboard can't be refactored safely.
 
-**On every push** (`.github/workflows/ci.yml`) GitHub Actions runs `ruff` and
-`mypy`, then the whole test suite on Python 3.11 and 3.12 with a coverage
-summary, and then the real thing: `docker compose up` for the entire stack,
-followed by the end-to-end check against it.
+On every push, GitHub Actions (`.github/workflows/ci.yml`) runs `ruff` and `mypy`, then the full test suite on Python 3.11 and 3.12 with a coverage summary. Then it brings up the whole stack with `docker compose up` and runs the end-to-end check against it. CodeQL scans the code for security issues on every push and once a week.
 
 ```bash
 pytest                      # everything, with coverage: make test-all
 ruff check . && mypy        # the same lint and type checks CI runs: make lint
 ```
 
----
-
 ## API
 
 | endpoint | purpose |
 |---|---|
-| `GET /health` | liveness + MongoDB reachability |
-| `GET /throughput?windows=` | events per window — the pipeline's own measured rate |
-| `GET /pipeline` | processing lag: window close → row written |
+| `GET /health` | liveness and MongoDB reachability |
+| `GET /throughput?windows=` | events per window, the pipeline's own measured rate |
+| `GET /pipeline` | processing lag, from a window closing to its row being written |
 | `GET /graph?limit=&minutes=&min_pairs=&min_affinity=` | co-occurrence as nodes and edges, over the same lookback as related-products |
-| `GET /trending?limit=&minutes=` | top products over the last N minutes, by weighted score (cached `CACHE_TTL_SECONDS`) |
-| `GET /related-products/{id}?limit=&score_by=` | co-viewed products ranked by `affinity`, `lift` or `pmi`, with trending fallback |
-
-**Three answers, not two.** `/related-products` and `/graph` answer from the
-recent lookback where they can; when that window is empty they apply the same
-lookback to the newest data that exists and say so (`"window":
-"latest_available"`, with `as_of` giving its age) rather than dropping the
-time bound, which on 1.5M pair rows means an unindexed scan and an all-time
-popularity chart; only with no pairs at all does `/related-products` fall back
-to trending. `/trending` never widens - it
-reports the last N minutes and, when those are empty, says how old the newest
-window is.
+| `GET /trending?limit=&minutes=` | top products over the last N minutes, by weighted score (cached for `CACHE_TTL_SECONDS`) |
+| `GET /related-products/{id}?limit=&score_by=` | co-viewed products ranked by `affinity`, `lift` or `pmi`, with a trending fallback |
 | `GET /stats` | collection counts, latest window, request counters |
 | `GET /metrics` | Prometheus text format |
+
+`/related-products` and `/graph` can give three kinds of answer. They use the recent lookback when it has data. When it's empty, they apply the same lookback to the newest data that exists and say so in the response (`"window": "latest_available"`, with `as_of` giving its age). They don't drop the time limit altogether, because on 1.5M pair rows that means a scan with no index and an all-time popularity chart. Only when there are no pairs at all does `/related-products` fall back to trending. `/trending` never widens. It reports the last N minutes and, if those are empty, says how old the newest window is.
 
 ```bash
 curl localhost:8000/related-products/9001 | jq
@@ -507,44 +312,23 @@ curl localhost:8000/related-products/9001 | jq
 }
 ```
 
-`lift` and `pmi` are null when the marginals needed to compute them are
-missing, rather than being reported as zero ([ADR 0003](docs/adr/0003-lift-not-raw-counts.md)).
-
----
+`lift` and `pmi` come back as null when the numbers needed to compute them are missing, instead of being reported as zero ([ADR 0003](docs/adr/0003-lift-not-raw-counts.md)).
 
 ## Dashboard
 
-Six sections, each showing the pipeline rather than decorating the page:
+The page has six sections, and each one shows something about the pipeline.
 
-- **Pipeline health** — four tiles. *Processing delay* is
-  `written_at - window_end`: how long after a one-minute window ends its final
-  numbers are saved. A few seconds up to the trigger interval is healthy; a
-  steadily rising number means the job cannot keep up. *Last update*, and the
-  newest full minute's event count and rate, sit beside it — labelled with
-  that window's time and age when the data is not current, so a stopped
-  pipeline never reads as a running one.
-- **Events per minute** — charted from what Spark actually wrote to MongoDB,
-  not from a producer-side counter. If the producer is sending but this is
-  flat, the bottleneck is downstream of Kafka. The caption states the window
-  range it is showing.
-- **Products** — click-to-send: *View* and *Add to cart* publish real events
-  straight to Kafka, so you can watch your own click come back as a pair. The
-  first twelve catalogue products are shown (a real catalogue has tens of
-  thousands).
-- **Trending now** and **Related products** — the two serving endpoints, with
-  the answer's source named: co-occurrence, the widened all-retained window,
-  or the trending fallback.
-- **Products viewed together** — the product pairs as a graph: line thickness
-  by affinity, the number on the line is how many times the pair was seen, box
-  colour by category, with a legend listing the categories actually on the
-  graph. Solid lines join related categories (laptop + sleeve with the demo
-  catalogue, same category with a real one), dashed lines cross them. A slider
-  shows more of the weaker links, and the side panel counts how many lines
-  cross categories and lists the strongest five. The line style is display
-  only — the pipeline never sees categories.
+**Pipeline health** has four tiles. Processing delay is `written_at - window_end`, the time between a one-minute window ending and its final numbers being saved. A few seconds, up to the trigger interval, is healthy. A number that keeps rising means the job can't keep up. Next to it are the time since the last update, and the newest full minute's event count and rate. When the data isn't current, those tiles are labelled with that window's time and age, so a stopped pipeline never looks like a running one.
 
-The graph is rendered with `st.graphviz_chart` from a generated DOT string, so
-it needs no extra dependency — no networkx, no pyvis, no plotly.
+**Events per minute** is charted from what Spark actually wrote to MongoDB, not from a counter in the producer. If the producer is sending and this chart is flat, the bottleneck is after Kafka. The caption says which time range it's showing.
+
+**Products** lets you click View or Add to cart, and each click is sent straight to Kafka as a real event, so you can watch your own click come back as a pair. It shows the first twelve products in the catalogue, since a real catalogue has tens of thousands.
+
+**Trending now** and **Related products** are the two serving endpoints. Each names where its answer came from: recent co-occurrence, the newest data available, or the trending fallback.
+
+**Products viewed together** draws the product pairs as a graph. Thicker lines mean stronger links. Point at a line and a small box shows the two products and how many times they were seen together. With up to twelve categories on the graph, each gets its own colour and the legend names them all. With more than that (a real catalogue can put thirty on one graph), colours would repeat and mislead, so every box is one neutral colour with its category written under its id. Solid lines join related categories and dashed lines cross them. With the demo catalogue "related" means something like laptop and sleeve, and with a real one it means the same category. A slider shows more of the weaker links, and the side panel counts the lines that cross categories and lists the five strongest. Line style is only for display. The pipeline itself never sees categories.
+
+The graph is drawn on the server by Graphviz, which is installed in the dashboard's container, and embedded with a few lines of script for the hover box. If Graphviz isn't installed, the page falls back to Streamlit's built-in chart with the counts printed on the lines.
 
 ## Layout
 
@@ -564,7 +348,7 @@ scripts/smoke_test.py      end-to-end assertion against a running stack
 scripts/load_test.py       throughput and latency benchmark
 scripts/recovery_test.py   crash-and-restart test
 src/common/bench.py        shared benchmark helpers (standard library only)
-src/common/scoring.py      affinity, lift and PMI ranking - the score_by methods
+src/common/scoring.py      affinity, lift and PMI ranking (the score_by methods)
 src/data/retailrocket.py   real dataset: visits, event mapping, replay clock
 src/data/evaluation.py     hit-rate@10 and the bestseller baseline
 scripts/fetch_dataset.py   download and verify the RetailRocket export
@@ -580,81 +364,45 @@ Makefile                   the same commands, wrapped (macOS and Linux)
 pyproject.toml             pytest, coverage, ruff and mypy settings
 ```
 
-Configuration is entirely environment-driven: the same code runs in the
-containers (`kafka:29092`) and on your machine (`localhost:9092`).
-
----
+All configuration comes from environment variables, so the same code runs in the containers (`kafka:29092`) and on your machine (`localhost:9092`).
 
 ## Monitoring
 
-Prometheus (`:9090`) and Grafana (`:3000`) start with the rest of the stack.
-Grafana opens straight on the **Streaming Product Affinity Pipeline**
-dashboard - read-only, no login - charting Kafka consumer lag, ingest vs
-processing rate, batch duration, state-store size (each per Spark query), the
-related-products source mix, and the dead-letter count.
+Prometheus (`:9090`) and Grafana (`:3000`) start with the rest of the stack. Grafana opens straight on the Streaming Product Affinity Pipeline dashboard, read-only and with no login. It charts Kafka consumer lag, ingest rate against processing rate, batch duration, state store size (each per Spark query), where related-products answers came from, and the dead-letter count.
 
-`/metrics` reports the value *now*; Prometheus scrapes the API container
-(`api:8000`) every 10 s and keeps the history; Grafana draws it.
+`/metrics` gives the value right now. Prometheus scrapes the API container (`api:8000`) every 10 s and keeps the history, and Grafana draws it.
 
-**Kafka lag** is the number of events a query has not read yet, measured
-after each batch against the broker's latest offsets. Spark's own figure
-(`maxOffsetsBehindLatest`) compares with the offsets it saw when it *planned*
-the batch, so without a batch-size cap it is always 0. A sawtooth up to
-(event rate x trigger interval) is normal; a rising floor means falling
-behind.
+Kafka lag is the number of events a query hasn't read yet, measured after each batch against the broker's latest offsets. Spark's own figure (`maxOffsetsBehindLatest`) compares against the offsets it saw when it planned the batch, so without a cap on batch size it's always 0. A sawtooth that rises to about the event rate times the trigger interval is normal. A floor that keeps rising means the job is falling behind.
 
-**Alert rules** (`monitoring/alerts.yml`) are evaluated by Prometheus and
-listed at http://localhost:9090/alerts: API down, pipeline stale for 2
-minutes, Kafka lag above 1000 and rising, batches slower than the trigger
-interval, and state that keeps growing. There is no Alertmanager, so nothing
-is sent anywhere - the page shows what would page someone.
+The alert rules in `monitoring/alerts.yml` are evaluated by Prometheus and listed at http://localhost:9090/alerts. They cover the API being down, the pipeline going stale for 2 minutes, Kafka lag above 1000 and rising, batches slower than the trigger interval, and state that keeps growing. There's no Alertmanager, so nothing actually gets sent. The page shows what would have paged someone.
 
-Grafana may flash an "Unauthorized" pop-up: its page asks the server who is
-signed in (`/api/user`), and that request is refused for anonymous visitors.
-It is harmless.
+Grafana may flash an "Unauthorized" pop-up. Its page asks the server who's signed in (`/api/user`), and that request is refused for anonymous visitors. You can ignore it.
 
 ## Documentation
 
 | | |
 |---|---|
-| [docs/adr/](docs/adr/) | 11 architecture decision records — what was chosen, and what was rejected |
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | fault-tolerance demo, load testing, diagnosing lag |
+| [docs/adr/](docs/adr/) | 11 architecture decision records: what was chosen, and what was turned down |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | fault tolerance demo, load testing, diagnosing lag |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | measured throughput, latency and crash recovery, written by the benchmark scripts |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | hit-rate@10 on real traffic against the bestseller baseline, written by `scripts/evaluate.py` |
-| [DEFECTS_FIXED.md](DEFECTS_FIXED.md) | every defect found and how it was verified |
+| [DEFECTS_FIXED.md](DEFECTS_FIXED.md) | every defect found, and how each fix was checked |
 
 ## Licence
 
-MIT - see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ## Known limitations
 
-1. **Co-occurrence is not collaborative filtering.** No matrix factorisation,
-   no embeddings, no personalisation to a specific user's history. It answers
-   "what is viewed with this" rather than "what should *you* see next".
-   See the [Roadmap](#roadmap).
-2. **The quality number needs the dataset.** Hit-rate@10 is measured on real
-   RetailRocket traffic, which is a download away (`scripts/fetch_dataset.py`,
-   free Kaggle account) rather than in the repository. On the generated
-   traffic that ships with the project there is nothing honest to measure:
-   the ground truth would be the generator's own affinity table.
-3. **Single-broker Kafka.** Six partitions let Spark read in parallel, but
-   with one broker nothing is replicated; broker failure and partition
-   rebalancing are untested.
-4. **Local Spark only.** `local[8]` in one container, never run on a real
-   cluster, so executor tuning and network shuffles are untested.
+1. **Co-occurrence isn't collaborative filtering.** There's no matrix factorisation, no embeddings and no personalisation to one user's history. It answers "what gets viewed with this", not "what should you see next". See the [Roadmap](#roadmap).
+2. **The quality number needs the dataset.** Hit-rate@10 is measured on real RetailRocket traffic, which you download yourself (`scripts/fetch_dataset.py`, free Kaggle account). It isn't in the repository. The generated traffic that ships with the project has nothing honest to measure, since the right answer would be the generator's own affinity table.
+3. **Kafka has a single broker.** Six partitions let Spark read in parallel, but with one broker nothing is replicated. Broker failure and partition rebalancing are untested.
+4. **Spark only runs locally.** It's `local[8]` in one container and has never run on a real cluster, so executor tuning and network shuffles are untested.
 5. **No authentication** on the API or the dashboard.
-6. **Benchmarks are from one laptop.** Kafka, Spark, MongoDB and the load
-   generator share the same cores, so the numbers show relative behaviour
-   and where this setup saturates, not what a cluster would do.
+6. **The benchmarks come from one laptop.** Kafka, Spark, MongoDB and the load generator share the same cores, so the numbers show how the parts behave relative to each other and where this setup maxes out. They don't say what a cluster would do.
 
 ## Roadmap
 
-Planned, **not implemented**. The pipeline is being shaped so these can be
-added without rewriting what exists.
+This is planned and not built yet. The pipeline is being shaped so these can be added without rewriting what's already there.
 
-- **Machine learning (later)** - the ranking methods are designed to be
-  pluggable, so learned models can sit beside co-occurrence and be compared on
-  the same evaluation: item2vec embeddings trained on sessions (Spark MLlib),
-  ALS on implicit feedback, a session-based sequence model (e.g. SASRec),
-  experiment tracking with MLflow, and optional LLM-written explanations.
+Machine learning comes later. The ranking methods are pluggable, so learned models can sit next to co-occurrence and be compared on the same evaluation. The plan is item2vec embeddings trained on sessions (Spark MLlib), ALS on implicit feedback, a session-based sequence model such as SASRec, experiment tracking with MLflow, and possibly LLM-written explanations.

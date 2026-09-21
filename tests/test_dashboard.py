@@ -10,7 +10,9 @@ to either side that breaks the other is caught.
 """
 
 import importlib
+import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import mongomock
@@ -90,6 +92,31 @@ def run():
     return AppTest.from_file(DASHBOARD, default_timeout=60).run()
 
 
+def graph_of(app):
+    """The drawn graph: the hover page's SVG when Graphviz is installed (as
+    in the container), the DOT given to st.graphviz_chart when it is not."""
+    frames = app.get("iframe")
+    if frames:
+        return frames[0].proto.srcdoc
+    return app.get("graphviz_chart")[0].proto.spec
+
+
+def node_fills(markup):
+    """Fill colour of every product box, from either form of the graph."""
+    if "<svg" in markup:
+        return re.findall(r'class="node">\s*<title>[^<]*</title>\s*<path fill="([^"]+)"',
+                          markup)
+    return re.findall(r'^\s*n\d+ \[.*fillcolor="([^"]+)"', markup, re.M)
+
+
+def dashed_lines(markup):
+    """How many lines are dashed, from either form of the graph."""
+    if "<svg" in markup:
+        return len(re.findall(r'class="edge">(?:(?!</g>).)*stroke-dasharray',
+                              markup, re.S))
+    return markup.count("style=dashed")
+
+
 def metrics(app):
     return {m.label: m.value for m in app.metric}
 
@@ -123,10 +150,43 @@ def test_dashboard_reads_every_field_the_api_returns(stack):
 def test_graph_marks_cross_category_links(stack):
     fill(stack)
     app = run()
-    dot = app.get("graphviz_chart")[0].proto.spec
-    assert "style=solid" in dot and "style=dashed" in dot
-    # laptop + shoe: one of the three lines crosses categories.
+    drawn = graph_of(app)
+    # laptop + shoe: one of the three lines crosses categories, and it is the
+    # one dashed line.
+    assert dashed_lines(drawn) == 1
     assert metrics(app)["Lines crossing categories"] == "1 of 3"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("dot"),
+                    reason="needs the Graphviz dot binary (the container image has it)")
+def test_counts_appear_on_hover_not_on_the_lines(stack):
+    """Thirty printed counts overlapped each other and the boxes. The count
+    now appears in a small box when the pointer is on its line - and the box
+    must describe that line, so the table is keyed by the edge's own id."""
+    fill(stack)
+    app = run()
+    page = graph_of(app)
+    assert "<svg" in page, "the hover page, not the plain chart"
+    edges = re.findall(r'<g id="(e\d+)" class="edge">', page)
+    assert len(edges) == 3
+    table = json.loads(re.search(r"const EDGES = (\{.*?\});", page).group(1))
+    assert sorted(table) == sorted(edges), "every line has an entry, none extra"
+    assert sorted(e["n"] for e in table.values()) == [5, 20, 30]
+    # No count is printed on a line any more: edges carry no text.
+    assert not re.search(r'class="edge">(?:(?!</g>).)*<text', page, re.S)
+    assert 'id="tip"' in page and "rgba(" in page, "a translucent box"
+
+
+def test_a_product_name_cannot_break_out_of_the_hover_script():
+    from src.ui import dashboard as ui
+
+    graph = {"nodes": [{"id": 1, "name": "</script><b>x", "category": "a"},
+                       {"id": 2, "name": "Item 2", "category": "a"}],
+             "edges": [{"source": 1, "target": 2, "pair_count": 3,
+                        "affinity": 1.0}]}
+    page = ui.graph_page("<svg></svg>", graph)
+    script = page.split("<script>", 1)[1]
+    assert script.count("</script>") == 1, "only the real closing tag"
 
 
 def test_showing_more_lines_shows_the_weaker_pairs(stack):
@@ -221,9 +281,7 @@ def test_the_graph_colours_the_categories_it_actually_has(stack, monkeypatch):
     app = run()
     assert not app.exception, app.exception
 
-    dot = app.get("graphviz_chart")[0].proto.spec
-    used = [line.split('fillcolor="')[1].split('"')[0]
-            for line in dot.splitlines() if "fillcolor=" in line and "n" in line]
+    used = node_fills(graph_of(app))
     assert used, "no nodes drawn"
     assert set(used) != {ui.CATEGORY_COLOUR["unknown"]}, "every node grey again"
     # Same category, same colour; different categories, different colours.
@@ -234,6 +292,41 @@ def test_the_graph_colours_the_categories_it_actually_has(stack, monkeypatch):
     markdown = " ".join(m.value for m in app.markdown)
     assert "Laptops" not in markdown and "Footwear" not in markdown
     assert "cat-7" in markdown, "the legend must name the graph's categories"
+
+
+def test_no_two_categories_ever_share_a_colour(stack):
+    """A 30-day RetailRocket replay put 31 categories on one graph. Wrapping
+    round a 12-colour palette gave unrelated items the same colour - three
+    gold boxes, two of them joined by dashed "different category" lines - so
+    the picture contradicted itself. Up to the palette, every category gets
+    its own colour and the legend names all of them; past it, no category
+    gets a colour and each box prints its category instead."""
+    from src.ui import dashboard as ui
+
+    few = [f"cat-{i}" for i in range(len(ui.PALETTE))]
+    colours = ui.colour_map(few)
+    assert len(set(colours.values())) == len(few), "one colour per category"
+    assert not ui.labels_categories(colours)
+    assert len(ui.PALETTE) <= ui.LEGEND_CATEGORIES, "every colour is named"
+
+    many = [f"cat-{i}" for i in range(31)]
+    colours = ui.colour_map(many)
+    assert set(colours.values()) == {ui.NEUTRAL_COLOUR}
+    assert ui.labels_categories(colours)
+
+    graph = {"nodes": [{"id": i, "name": f"Item {i}", "category": c}
+                       for i, c in enumerate(many)],
+             "edges": [{"source": 0, "target": 1, "affinity": 2.0,
+                        "pair_count": 5}]}
+    dot = ui.build_dot(graph, lambda a, b: a == b, colours)
+    assert 'label="Item 0\\ncat-0"' in dot, "the category moves into the label"
+    assert "style=dashed" in dot, "the line still says: different categories"
+
+    # The demo keeps its hand-picked colours and plain labels.
+    demo = ui.colour_map(["laptop", "footwear"])
+    assert demo == {"laptop": ui.CATEGORY_COLOUR["laptop"],
+                    "footwear": ui.CATEGORY_COLOUR["footwear"]}
+    assert not ui.labels_categories(demo)
 
 
 def test_stale_windows_are_labelled_as_history(stack):
@@ -320,3 +413,15 @@ def test_dashboard_says_so_when_the_api_is_down(stack, monkeypatch):
     app = run()
     assert not app.exception
     assert any("not reachable" in e.value for e in app.error)
+
+
+def test_last_update_reads_like_a_clock():
+    """A finished replay left the page saying '3649 s ago'."""
+    from src.ui import dashboard as ui
+
+    assert ui.ago(4.4) == "4 s ago"
+    assert ui.ago(59) == "59 s ago"
+    assert ui.ago(360) == "6 min ago"
+    assert ui.ago(3649) == "1 h ago"
+    assert ui.ago(3720) == "1 h 2 min ago"
+    assert ui.ago(3 * 86400) == "3 days ago"
