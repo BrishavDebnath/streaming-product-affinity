@@ -1,8 +1,8 @@
 # Screenshots
 
-Drop these images here and the main README renders them. Five, in two sets:
-the generated traffic (which reads clearly, with product names and a category
-legend doing real work) and the RetailRocket run (which is the evidence).
+The main README renders `pipeline-health.png`, `affinity-graph.png` and
+`dashboard.png`, all cut from one full-page capture of the demo catalogue
+(DevTools device toolbar at 1400 x 4200, then "Capture full size screenshot").
 
 | filename | what to capture | with |
 |---|---|---|
