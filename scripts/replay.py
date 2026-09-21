@@ -125,8 +125,28 @@ def wire_events(visits, clock):
     return out
 
 
+def covered_by(dest: Path, items) -> bool:
+    """True when the catalogue at `dest` already lists every item.
+
+    A catalogue built for the whole dataset (`--dry-run --days 140`) must not
+    be replaced by a smaller one each time a 30-day slice is replayed: the
+    evaluation's category baseline and the ML experiments both need every
+    item's category, not just the replayed month's.
+    """
+    if not dest.is_file():
+        return False
+    try:
+        known = {int(p["id"]) for p in json.loads(dest.read_text(encoding="utf-8"))}
+    except (ValueError, KeyError, TypeError):
+        return False
+    return set(items) <= known
+
+
 def write_catalog(items, dest: Path) -> int:
     """A catalogue for the replayed items, with real category ids if present."""
+    if covered_by(dest, items):
+        log.info("kept %s: it already lists all %s replayed items", dest, f"{len(set(items)):,}")
+        return 0
     categories: dict[int, int] = {}
     for part in ("item_properties_part1.csv", "item_properties_part2.csv"):
         path = RAW / part

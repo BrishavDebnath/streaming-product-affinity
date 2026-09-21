@@ -1,0 +1,6 @@
+# Only for experiments/ml-feasibility and, later, the ranker trainer.
+# Versions the published feasibility numbers were measured with.
+gensim==4.4.0
+lightgbm==4.7.0
+scikit-learn==1.9.1
+numpy>=1.26

@@ -177,6 +177,43 @@ def test_cold_start_falls_back_to_trending_and_says_so(api, client):
     assert [r["product_id"] for r in body["related_products"]] == [PHONE]
 
 
+def test_empty_slots_are_filled_from_the_query_category(api, client):
+    """Co-occurrence rarely has a full list to give. The empty slots go to
+    the query's own category first: an offline check on RetailRocket found
+    that fill worth far more than trending."""
+    add_pair(api, LAPTOP, SLEEVE, count=20)
+    add_trending(api, XPS, events=30)          # a laptop, like the query
+    add_trending(api, PHONE, events=50)        # busier, but another category
+    body = client.get(f"/related-products/{LAPTOP}?limit=3").json()
+    assert body["source"] == "co_occurrence"
+    rows = body["related_products"]
+    assert [r["product_id"] for r in rows] == [SLEEVE, XPS]
+    assert [r["source"] for r in rows] == ["co_occurrence", "category_bestsellers"]
+    assert body["filled_from_category"] == 1
+    assert body["count"] == 2
+
+
+def test_the_category_fill_never_repeats_a_pair_or_the_query(api, client):
+    add_pair(api, LAPTOP, XPS, count=20)
+    add_trending(api, XPS, events=30)
+    add_trending(api, LAPTOP, events=90)
+    body = client.get(f"/related-products/{LAPTOP}?limit=5").json()
+    ids = [r["product_id"] for r in body["related_products"]]
+    assert ids == [XPS], "XPS once, from pairs; the query never"
+    assert body["filled_from_category"] == 0
+
+
+def test_cold_start_prefers_the_query_category_then_trending(api, client):
+    add_trending(api, XPS, events=5)
+    add_trending(api, PHONE, events=50)
+    body = client.get(f"/related-products/{LAPTOP}?limit=2").json()
+    assert body["source"] == "category_fallback"
+    rows = body["related_products"]
+    assert [r["product_id"] for r in rows] == [XPS, PHONE]
+    assert [r["source"] for r in rows] == ["category_bestsellers", "trending"]
+    assert "category" in body["message"]
+
+
 def test_unknown_product_is_rejected(client):
     response = client.get(f"/related-products/{UNKNOWN}")
     assert response.status_code == 404

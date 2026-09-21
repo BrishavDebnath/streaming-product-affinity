@@ -5,61 +5,42 @@ days the pipeline never saw, scored against the ten most-viewed products of the
 training period. Method and caveats: [ADR 0011](adr/0011-real-data-and-evaluation.md).
 
 <!-- hitrate:start -->
-_2026-09-18T18:13:43+00:00, k=10, source=api, 3,000 test cases_
+_2026-09-21T16:06:29+00:00, k=10, source=api, 3,000 test cases_
 
 | Model | hit-rate@10 | Hits | Coverage |
 |---|---:|---:|---:|
-| **Pipeline** (co-occurrence, served by the API) | **17.43%** | 523 | 89% |
+| **Pipeline** (co-occurrence, then category fill, served by the API) | **26.17%** | 785 | 100% |
+| Category bestsellers (top 10 of the query's category) | 20.77% | 623 | 100% |
 | Bestsellers (top 10 of the training days) | 0.73% | 22 | 100% |
 
 Training: 30 days from 2015-05-03 (617,109 events), replayed through Kafka. Test: the following 7 day(s), 89,483 visits, never seen by the pipeline.
 
-The pipeline is **23.77x** the baseline.
+Against the category bestsellers the pipeline is **+5.40 points**, and it is 35.68x the overall bestsellers.
 <!-- hitrate:end -->
 
 ## Reading those numbers
 
-The table above is what a client gets from `/related-products`:
-co-occurrence where the pipeline has pairs, trending products where it has
-none. Running the same 3,000 cases against the pair table alone
-(`--source mongo`) separates the two:
+The same 3,000 cases, scored four ways:
 
-| Source | hit-rate@10 | Coverage | vs baseline |
+| Method | hit-rate@10 | Coverage | vs category bestsellers |
 |---|---:|---:|---:|
-| MongoDB: co-occurrence only, ranked by pair count | **19.73%** | 64% | 26.91x |
-| API: co-occurrence plus the trending fallback | 17.43% | 89% | 23.77x |
-| Bestsellers: top 10 of the training month | 0.73% | 100% | n/a |
+| API: co-occurrence, then the query's category, then trending | **26.17%** | 100% | **+5.40 points** |
+| MongoDB: co-occurrence only | 19.73% | 64% | minus 1.03 points |
+| Category bestsellers | 20.77% | 100% | n/a |
+| Global bestsellers | 0.73% | 100% | minus 20.03 points |
 
-This is a trade between precision and coverage, not a ranking. The pair table
-answered 1,932 of the 3,000 cases and was right about one in five of them. The
-API answered 2,673, because when it has no pairs it falls back to trending, and
-most of those extra answers are wrong. That is the right behaviour for a
-"customers also viewed" strip, which has to render something. It is the wrong
-behaviour for a number you want to quote. **19.7% at 64% coverage is what the
-co-occurrence model itself is worth. 17.4% at 89% is what the product does.**
+Category bestsellers is the baseline to beat. Co-occurrence alone does not
+beat it: it answers 64% of questions and loses the rest. The API does, because
+it fills the slots co-occurrence leaves empty with the query category's most
+active products. Of the 3,000 answers, 753 came from pairs alone, 812 from
+pairs topped up from the category, 971 from the category because the product
+had no pairs, and 69 from trending.
 
-### Raw counts beat weighted affinity
+Every query product had a category in the catalogue used here, built for all
+235,061 items with `scripts/replay.py --dry-run --days 140`.
 
-The pair table is ranked by `pair_count` and the API ranks by `affinity`
-(the count weighted by how unusual the pairing is). On this dataset the plain
-count wins by 2.3 points. Weighting rewards pairs that are distinctive but
-rare, and a 30-day window measures rare pairs badly. A pair seen four times
-has a wonderful affinity score and no evidence behind it.
-`scripts/evaluate.py --score-by {affinity,lift,pmi}` exists so this can be
-re-measured instead of argued about. `MIN_PAIR_COUNT` sets how much evidence a
-pair needs before it can rank at all.
-
-**Why these numbers are conservative.** 1,068 of the 3,000 query products had
-no pairs at all in the training month. That is real cold start, and each one
-counts as a miss for the pipeline while the bestseller list still answers.
-Training on more days, or lowering `MIN_PAIR_COUNT`, would raise coverage.
-These numbers come from 30 days of training with the defaults unchanged.
-
-**What it does not measure.** This tests a "customers also viewed" strip, not
-personalisation: the model sees one product, not a shopper's history. The
-script also reports the looser `any-product` figure, which counts a hit if
-anything recommended appeared anywhere later in the same visit, instead of
-only in the next view. That is an easier question.
+**What it does not measure.** This is a "customers also viewed" strip, not
+personalisation: the model sees one product, not a shopper's history.
 
 ## How these numbers are kept honest
 

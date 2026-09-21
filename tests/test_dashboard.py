@@ -145,6 +145,7 @@ def test_dashboard_reads_every_field_the_api_returns(stack):
     assert tables, "trending and related products should both render"
     columns = {c for table in tables for c in table.columns}
     assert "Product" in columns
+    assert "Why it's here" in columns, "each related product says where it came from"
 
 
 def test_graph_marks_cross_category_links(stack):

@@ -191,6 +191,43 @@ def _trending_uncached(limit, minutes, latest):
     return body
 
 
+def _category_bestsellers(product_id: int, cutoff, exclude: set[int],
+                          n: int) -> list[dict]:
+    """The most active products in the query's own category over the lookback.
+
+    This is what fills the slots co-occurrence leaves empty, before trending.
+    An offline check on RetailRocket found "the most viewed items in the same
+    category" scoring about what co-occurrence does on its own, at full
+    coverage, and co-occurrence padded with it well above either. Products
+    with no category get nothing here and fall through to trending.
+    """
+    category = (catalog.get(product_id) or {}).get("category")
+    if not category or category == "uncategorised" or n <= 0:
+        return []
+    minute = cutoff.replace(second=0, microsecond=0).isoformat() if cutoff else "all"
+
+    def ranked_by_category():
+        counts, _ = _product_counts(cutoff)
+        index: dict[str, list[tuple[float, int]]] = {}
+        for pid, events in counts.items():
+            item = catalog.get(pid)
+            if item and item.get("category") not in (None, "uncategorised"):
+                index.setdefault(item["category"], []).append((events, pid))
+        for rows in index.values():
+            rows.sort(key=lambda r: (-r[0], r[1]))
+        return index
+
+    index = _cached(f"category-index:{minute}", ranked_by_category)
+    out = []
+    for events, pid in index.get(category, []):
+        if pid not in exclude:
+            out.append({"product_id": pid, "events": int(events),
+                        "source": "category_bestsellers"})
+            if len(out) >= n:
+                break
+    return out
+
+
 @app.get("/related-products/{product_id}")
 def related_products(product_id: int,
                     limit: int = Query(default=config.DEFAULT_LIMIT, ge=1, le=50),
@@ -257,9 +294,17 @@ def related_products(product_id: int,
                  "affinity": r["affinity"], "pair_count": r["pair_count"],
                  "peak_users_per_window": r.get("peak_users_per_window"),
                  "lift": r.get("lift"), "pmi": r.get("pmi"),
-                 "score": round(r["score"], 4)} for r in ranked]
+                 "score": round(r["score"], 4),
+                 "source": "co_occurrence"} for r in ranked]
+        filled = _category_bestsellers(
+            product_id, cutoff, {product_id} | {r["product_id"] for r in rows},
+            limit - len(rows))
+        rows += filled
         return {"product_id": product_id,
                 "source": "co_occurrence",
+                # How many of the rows came from the category instead of
+                # from pairs: co-occurrence rarely has a full `limit` to give.
+                "filled_from_category": len(filled),
                 "ranked_by": score_by,
                 "window": window,
                 "lookback_minutes": config.PAIR_LOOKBACK_MINUTES,
@@ -269,23 +314,36 @@ def related_products(product_id: int,
                 "count": len(rows),
                 "related_products": catalog.enrich(rows)}
 
-    # Cold start: no pairs seen for this product yet.
+    # Cold start: no pairs seen for this product yet. The query's own
+    # category first, then whatever is trending for the slots still empty.
     _COUNTERS["related_fallback"] += 1
     latest = _latest_window()
-    fallback: list[dict] = []
+    by_category: list[dict] = []
     if latest:
-        fallback = list(_db[config.COLL_TRENDING].find(
+        # Anchor on the newest data, as the pair lookup does, so a finished
+        # replay still has a lookback to rank the category by.
+        newest = min(datetime.now(timezone.utc), _as_utc(latest["window_end"]))
+        cutoff = newest - timedelta(minutes=config.PAIR_LOOKBACK_MINUTES)
+        by_category = _category_bestsellers(product_id, cutoff, {product_id}, limit)
+    trending: list[dict] = []
+    if latest and len(by_category) < limit:
+        taken = {product_id} | {r["product_id"] for r in by_category}
+        trending = [dict(r, source="trending") for r in _db[config.COLL_TRENDING].find(
             {"window_start": latest["window_start"],
-             "product_id": {"$ne": product_id}},
+             "product_id": {"$nin": list(taken)}},
             {"_id": 0},
-        ).sort("score", DESCENDING).limit(limit))
-
+        ).sort("score", DESCENDING).limit(limit - len(by_category))]
+    rows = by_category + trending
+    source = "category_fallback" if by_category else "trending_fallback"
     return {"product_id": product_id,
-            "source": "trending_fallback",
-            "count": len(fallback),
-            "related_products": catalog.enrich(fallback),
-            "message": "No co-occurrence data for this product yet; "
-                       "showing trending products instead."}
+            "source": source,
+            "count": len(rows),
+            "related_products": catalog.enrich(rows),
+            "message": ("No co-occurrence data for this product yet; showing "
+                        "the most active products in its category instead."
+                        if by_category else
+                        "No co-occurrence data for this product yet; "
+                        "showing trending products instead.")}
 
 
 def _product_counts(cutoff):

@@ -219,13 +219,14 @@ Four things had to be decided to make real data work ([ADR 0011](docs/adr/0011-r
 
 Measured on 3,000 held-out visits, with 30 days of RetailRocket traffic (617,109 events) replayed through Kafka and the following 7 days used for testing:
 
-| | hit-rate@10 | Coverage | vs baseline |
+| | hit-rate@10 | Coverage | vs category bestsellers |
 |---|---:|---:|---:|
-| **Pipeline**, co-occurrence only | **19.7%** | 64% | **26.9x** |
-| Pipeline, as the API serves it (with fallback) | 17.4% | 89% | 23.8x |
-| Bestsellers (top 10 of the training month) | 0.73% | 100% | n/a |
+| **Pipeline, as the API serves it** (co-occurrence, then the query's category, then trending) | **26.2%** | 100% | **+5.4 points** |
+| Pipeline, co-occurrence only | 19.7% | 64% | 1.0 point below |
+| Category bestsellers (top 10 of the query's category) | 20.8% | 100% | n/a |
+| Global bestsellers (top 10 of the training month) | 0.73% | 100% | 20.0 points below |
 
-Coverage is the share of questions that got a real co-occurrence answer instead of the trending fallback. It sits next to the hit-rate because an average that hides it isn't an honest number. The two pipeline rows trade precision for coverage. The co-occurrence model is right 19.7% of the time on the 64% of questions it can answer, and the API as a whole scores 17.4% because it answers 89% of them. Either way the figure is on the cautious side. 1,068 of the 3,000 query products had no pairs at all in the training month, and every one of them counts as a miss for the pipeline while the bestseller list still gets to answer.
+The baseline that matters is the second one from the bottom: the ten most-viewed items in the query's own category. It needs no pipeline at all, and it is what a shop would try first. Co-occurrence on its own does not beat it. It answers only 64% of questions, and on those it is right more often, but the gaps cost more than that gains. What beats the baseline, by 5.4 points at full coverage, is the combination the API serves: pairs where the pipeline has them, then the query's category to fill the empty slots. An earlier version of this README compared the pipeline only with global bestsellers, which made a 26.9x claim look stronger than it was ([defect 90](DEFECTS_FIXED.md)).
 
 Scoring a different window from the one replayed would test the pipeline on its own training days. `scripts/replay.py` records what it sent and `scripts/evaluate.py` refuses a mismatch, because that mistake shows up as a 35.1% hit-rate and not as an error ([defect 85](DEFECTS_FIXED.md)). [docs/EVALUATION.md](docs/EVALUATION.md) has the details and what the number doesn't claim. The raw run is saved locally in `results/evaluation.json`, and `results/` is git-ignored.
 
@@ -249,7 +250,7 @@ Everything runs on one machine's cores, so these figures describe a laptop, not 
 
 ## Tests
 
-There are 128 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
+There are 133 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
 
 | What | How | Where it runs |
 |---|---|---|
@@ -395,6 +396,7 @@ Grafana may flash an "Unauthorized" pop-up. Its page asks the server who's signe
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | measured throughput, latency and crash recovery, written by the benchmark scripts |
 | [docs/EVALUATION.md](docs/EVALUATION.md) | hit-rate@10 on real traffic against the bestseller baseline, written by `scripts/evaluate.py` |
 | [DEFECTS_FIXED.md](DEFECTS_FIXED.md) | every defect found, and how each fix was checked |
+| [docs/ML_PLAN.md](docs/ML_PLAN.md) | the plan for adding ML, and the offline tests that shaped it |
 
 ## Licence
 
@@ -411,6 +413,17 @@ MIT. See [LICENSE](LICENSE).
 
 ## Roadmap
 
-This is planned and not built yet. The pipeline is being shaped so these can be added without rewriting what's already there.
+This is planned and not built yet. The full plan, with the measurements behind
+every choice, is in [docs/ML_PLAN.md](docs/ML_PLAN.md).
 
-Machine learning comes later. The ranking methods are pluggable, so learned models can sit next to co-occurrence and be compared on the same evaluation. The plan is item2vec embeddings trained on sessions (Spark MLlib), ALS on implicit feedback, a session-based sequence model such as SASRec, experiment tracking with MLflow, and possibly LLM-written explanations.
+Each idea was tested offline on RetailRocket before it made the list. Two
+survived. The first is a fairer baseline and a better fallback: the ten
+most-viewed items in the query's own category, which needs no ML. The second
+is a learned re-ranker, where LightGBM orders candidates from co-occurrence,
+the category and item embeddings using features the stream already computes.
+Offline it beat the best non-ML method by 3.0 to 3.6 points of hit-rate@10 in
+three separate test weeks.
+
+Sequence models, purchase-intent prediction, bot filtering and LLM-written
+explanations were tested or checked against this data and dropped. The plan
+says why for each one.

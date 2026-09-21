@@ -641,3 +641,30 @@ def test_a_leaking_evaluation_stops_before_it_prints_a_number(tmp_path,
     monkeypatch.setattr(sys, "argv", argv + ["--allow-window-mismatch"])
     assert script.main() == 0
     assert (tmp_path / "EVALUATION.md").exists()
+
+
+def test_a_full_catalogue_is_not_shrunk_by_a_smaller_replay(tmp_path):
+    """Building the catalogue for every item and then replaying 30 days used
+    to overwrite it with that month's items only."""
+    replay = load_script("replay.py")
+    dest = tmp_path / "catalog.json"
+    dest.write_text(json.dumps([{"id": i, "name": f"Item {i}", "category": "cat-1"}
+                                for i in (1, 2, 3, 4)]), encoding="utf-8")
+    assert replay.covered_by(dest, {1, 2})
+    assert replay.write_catalog({1, 2}, dest) == 0
+    assert len(json.loads(dest.read_text(encoding="utf-8"))) == 4, "left alone"
+
+    assert not replay.covered_by(dest, {1, 5}), "a new item means rebuild"
+    assert not replay.covered_by(tmp_path / "missing.json", {1})
+
+
+def test_the_category_baseline_answers_from_the_query_category():
+    views = {1: 50, 2: 40, 3: 30, 10: 99, 11: 5}
+    category_of = {1: "cat-a", 2: "cat-a", 3: "cat-a", 10: "cat-b", 11: "cat-b"}
+    recommend = ev.category_bestsellers(views, category_of, k=2)
+    assert recommend(3) == [1, 2, 3], "its own category, most viewed first"
+    assert recommend(11) == [10, 11]
+    assert recommend(999) == [10, 1, 2], "no category: the overall bestsellers"
+    # Scored like any model: the query itself never counts as a hit.
+    cases = [ev.Case("s", 3, 1, (1,)), ev.Case("t", 11, 10, (10,))]
+    assert ev.evaluate("category", cases, recommend, 2).hit_rate == 1.0
