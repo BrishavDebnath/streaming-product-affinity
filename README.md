@@ -65,16 +65,28 @@ The engineering is where the work is: bounded streaming state, idempotent
 writes, dead-letter handling, schema-version coexistence, and a tested
 transform layer. Those are all demonstrated and measured below.
 
-<!--
 ## Demo
 
-Capture these while the stack is running (see docs/screenshots/README.md),
-save them in docs/screenshots/, then remove this comment wrapper.
+![Pipeline health: 1.3 s processing delay, about 20 events/s, events per minute over the last 30 minutes](docs/screenshots/pipeline-health.png)
 
-![Dashboard](docs/screenshots/dashboard.png)
+*Pipeline health, read back from what Spark saved - not from the producer's own
+counter.*
 
-![Affinity graph](docs/screenshots/affinity-graph.png)
--->
+![Affinity graph: products joined by how often they were viewed in the same session](docs/screenshots/affinity-graph.png)
+
+*Products viewed in the same session. Solid lines join categories that belong
+together, dashed lines are shoppers wandering. The pipeline is never told the
+categories, yet it recovers them: shoes form their own island because the demo
+traffic never sends a shoe shopper to electronics on purpose, and every dashed
+link in this picture (at most 580 co-views) is weaker than every solid one
+(at least 1,319).*
+
+<details>
+<summary><b>The whole dashboard</b> - products you can click, trending, related products and the graph</summary>
+
+![The full dashboard](docs/screenshots/dashboard.png)
+
+</details>
 
 ## Prerequisites
 
