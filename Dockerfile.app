@@ -10,6 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Graphviz draws the affinity graph on the server, so the dashboard can show a
+# pair's count in a hover box instead of printing thirty overlapping numbers.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends graphviz fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
