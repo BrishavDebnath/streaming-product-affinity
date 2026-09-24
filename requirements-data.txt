@@ -4,4 +4,4 @@
 #
 # The pipeline itself does not depend on any of this.
 
-kaggle>=1.6
+kaggle>=2.2.4
