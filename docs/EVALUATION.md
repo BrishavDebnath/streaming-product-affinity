@@ -32,9 +32,11 @@ The same 3,000 cases, scored four ways:
 Category bestsellers is the baseline to beat. Co-occurrence alone does not
 beat it: it answers 64% of questions and loses the rest. The API does, because
 it fills the slots co-occurrence leaves empty with the query category's most
-active products. Of the 3,000 answers, 753 came from pairs alone, 812 from
-pairs topped up from the category, 971 from the category because the product
-had no pairs, and 69 from trending.
+active products. Counted per distinct query product (the evaluation asks
+about each one once and reuses the answer), 753 came from pairs alone, 812
+from pairs topped up from the category, 971 from the category because the
+product had no pairs, and 69 from trending: 2,605 products behind the 3,000
+cases.
 
 Every query product had a category in the catalogue used here, built for all
 235,061 items with `scripts/replay.py --dry-run --days 140`.

@@ -23,7 +23,9 @@ missing optional field is never a rejection reason:
 | v2 | all fields | used directly |
 | v3+ | unknown to this consumer | routed to the DLQ as `unsupported_schema_version:N` |
 
-The producer emits a `LEGACY_EVENT_RATE` share of v1 events continuously, so
+The producer splits its events between the two versions by `SCHEMA_V2_RATIO`
+(half and half by default), and `scripts/seed.py` emits a `LEGACY_EVENT_RATE`
+share of v1 events in its backfill, so
 the compatibility path is always exercised and cannot quietly rot as dead
 code.
 

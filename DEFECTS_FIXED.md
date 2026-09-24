@@ -155,7 +155,7 @@ still carries the watermark.
 | Service named `mongo`, container `mongodb`, code used `mongodb` | one name throughout |
 | ZooKeeper container | Kafka in KRaft mode (ZooKeeper is removed in Kafka 4.x) |
 | No health checks, so Spark raced the broker | `condition: service_healthy` |
-| No tests | 133 tests (Spark, API, dashboard, real data), plus CI on every push |
+| No tests | 137 tests (Spark, API, dashboard, real data), plus CI on every push |
 
 
 ---
@@ -579,14 +579,14 @@ idempotence warning per process.
 The suite tested the transforms and the streaming plan, but nothing ran the
 API or the dashboard, and CI ran four lint rules and that one file.
 **Changed:**
-- `tests/test_api.py`: 23 tests driving the real FastAPI app over an
+- `tests/test_api.py`: 32 tests driving the real FastAPI app over an
   in-memory MongoDB (mongomock): sums across windows, weak pairs hidden, the
   trending fallback, an unknown product, the ranking methods, graph edges,
   `/metrics` output including "unknown" lag, and a database failure returning
   503, not 500.
 - `tests/test_dashboard.py`: Streamlit's `AppTest` runs the real page against
   that API, so a renamed field fails a test instead of the browser.
-- `pytest` runs all four groups (133 tests). The Spark group still runs as a
+- `pytest` runs all four groups (137 tests). The Spark group still runs as a
   plain script inside the container, where pytest is not installed, and
   `tests/conftest.py` turns any failed `check()` into a failed pytest test.
 - `pyproject.toml` holds the pytest, coverage, ruff and mypy settings.
@@ -914,8 +914,9 @@ start day are both caught, the replay's record and the evaluation's reader
 agree on shape, and end to end a leaking run exits 2 and writes no report
 while the override writes one.
 
-**The 35.1% figure is withdrawn.** It appears nowhere in the README or in
-`docs/EVALUATION.md`. The published numbers are the 30-day ones in the README and `docs/EVALUATION.md`.
+**The 35.1% figure is withdrawn as a result.** Both the README and
+`docs/EVALUATION.md` mention it only as the example of what this mistake
+looks like. The published numbers are the 30-day ones in those two files.
 
 ### 86. On real data, the graph's colours contradicted its lines
 A 30-day RetailRocket replay put **31 categories** on the 30-line graph, and
@@ -981,3 +982,70 @@ related product now says where it came from, in the API and on the
 dashboard. `scripts/replay.py` also stopped overwriting a catalogue that
 already covers every replayed item, because the category baseline needs
 categories for every item, not only the replayed month's. Five tests.
+
+# Sixth pass: a review of the public repository
+
+Three reviews of the published repo, checked against the running code.
+
+### 91. Published ports were open to the network, and SECURITY.md said otherwise
+Compose published all seven ports on 0.0.0.0 (`9092`, `27018`, `4040`, `8000`,
+`8501`, `9090`, `3000`), while `SECURITY.md` told the reader "every service
+binds to localhost". MongoDB runs without credentials and the dashboard writes
+to Kafka, so on a shared network anyone could read the database and publish
+events. A published Docker port also bypasses the host firewall.
+**Changed:** every mapping is now `127.0.0.1:...`, with the reason in a
+comment, and SECURITY.md describes what the file does rather than what it
+should have done. The Spark service also stopped mounting the whole repository
+read-write as root: it now mounts `src`, `tests` and `data` read-only.
+
+### 92. The replay blacked out eight minutes of live traffic
+`flush_windows` sent watermark events ten minutes past the end of the replay,
+which is far more than closing the last windows needs. Spark's watermark moved
+with them, so for about eight minutes afterwards every event stamped "now" was
+older than the watermark and was dropped inside the stateful operators: no
+log, no dead-letter row, no count. Dashboard clicks did nothing, the demo
+producer's traffic vanished, and `PipelineStale` fired after every replay.
+**Changed:** `FLUSH_MINUTES` is computed from the pipeline's own settings
+(`COOCCURRENCE_WINDOW + CO_VIEW_GAP + WATERMARK + 1`, so six by default
+instead of ten), and the replay warns how long the remaining blackout lasts
+and how to avoid it. A test pins both ends: far enough to close the windows,
+no further.
+
+### 93. The API cache never evicted anything
+`_cached` wrote entries and never removed them. The category index is keyed by
+the lookback minute, so it added an entry every minute and kept it, each one
+holding a row per catalogued item; query parameters also went straight into
+keys. Harmless on twelve demo products, hundreds of megabytes on a real
+catalogue.
+**Changed:** entries past the longest TTL are dropped on write, and the cache
+is capped at `CACHE_MAX_KEYS` (256) with the oldest going first. `/metrics`
+reports how many entries are held. Two tests.
+
+### 94. `/trending` reported a window range it had not summed
+`window_start` came from the first window of whichever product ranked first,
+and `window_end` from the window still being written, so a 21-minute answer
+could be labelled as one minute and the end could be in the future.
+**Changed:** the range is now the oldest and newest window across the products
+actually returned. One test.
+
+### 95. Percentiles were off by one rank
+`percentile` used `round(pct/100 * n + 0.5)` for what the docstring calls a
+nearest-rank percentile. On an exact tie Python rounds to even, so p95 of 20
+samples returned the maximum and p50 of 10 returned the sixth value. The
+benchmark p50 and p95 figures were biased upward by one rank.
+**Changed:** `math.ceil`, with five checks covering the tie cases.
+
+### 96. Documentation that no longer matched the code
+Found by fact-checking every claim against the source: the README still
+described cold start as `trending_fallback` (it is `category_fallback` now),
+the roadmap and the ML plan said phase 1 was unbuilt after it shipped, the
+CodeQL trigger was described as every push when it is pushes to `main`, pull
+requests and a weekly cron, `CONTRIBUTING.md` was missing `source` in front of
+`.venv/bin/activate`, ADR 0002 multiplied 28,680 by 50 and wrote 1,314,500,
+ADR 0006 named `LEGACY_EVENT_RATE` for what the producer governs with
+`SCHEMA_V2_RATIO`, this file claimed the withdrawn 35.1% appeared nowhere
+(both the README and the evaluation quote it as the example of the mistake)
+and undercounted `tests/test_api.py`. CI also installed `ruff` and `mypy`
+unpinned, invisible to Dependabot, and had no `permissions:` block.
+**Changed:** all corrected. The lint tools are pinned in
+`requirements-test.txt`, and the workflow's token is `contents: read`.

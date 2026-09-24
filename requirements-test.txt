@@ -20,3 +20,9 @@ mongomock>=4.1        # the API and dashboard tests, with no MongoDB running
 # Starlette's TestClient (used by fastapi.testclient) refuses to import
 # without it; the older `httpx` is deprecated for this.
 httpx2>=2.0
+
+# The lint and type checks CI runs. Pinned, and here rather than installed
+# ad hoc in the workflow, so Dependabot can see them and a new ruff release
+# cannot turn CI red on an untouched repository.
+ruff==0.16.8
+mypy==2.3.1

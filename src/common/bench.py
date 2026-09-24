@@ -6,6 +6,7 @@ import them inside the Spark container.
 
 import http.client
 import json
+import math
 import os
 import platform
 import re
@@ -46,7 +47,10 @@ def percentile(values, pct):
     data = sorted(v for v in values if v is not None)
     if not data:
         return None
-    rank = max(1, min(len(data), int(round(pct / 100.0 * len(data) + 0.5))))
+    # ceil, not round(x + 0.5): when pct/100 * n lands on a whole number,
+    # round() breaks the .5 tie by parity, which returned rank n for p95 of
+    # 20 samples - the maximum, reported as a 95th percentile.
+    rank = max(1, min(len(data), math.ceil(pct / 100.0 * len(data))))
     return data[rank - 1]
 
 

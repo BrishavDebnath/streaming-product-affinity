@@ -9,13 +9,20 @@ has to read the source to find out.
 
 ## Known limitations, by design
 
-- **No authentication** on the API, the dashboard, Prometheus or Grafana. Every
-  service binds to localhost through Compose; publishing those ports to a
-  network would expose them unauthenticated.
+- **No authentication** on the API, the dashboard, Prometheus or Grafana.
+  Compose publishes every port on `127.0.0.1` only, so nothing is reachable
+  from the network. Removing that prefix exposes an unauthenticated MongoDB
+  and a writable Kafka to anyone who can reach the machine, and a published
+  Docker port bypasses the host firewall.
 - **No transport encryption.** Kafka uses PLAINTEXT listeners and MongoDB runs
   without credentials, both inside the Compose network.
 - **A single Kafka broker with no replication**, so there is no durability
   story beyond one machine.
+- **The crash-recovery test gets the host Docker socket.** `make recovery`
+  (the `recovery` profile in `docker-compose.yml`) mounts
+  `/var/run/docker.sock` so it can kill and restart the Spark container. That
+  is root-equivalent access to the host daemon. Run it only on a machine you
+  control. Nothing in `docker compose up` mounts the socket.
 - **The dashboard writes to Kafka.** The View and Add to cart buttons publish
   events. That is the demo's point, and it means anyone who can reach the
   dashboard can write to the topic.
@@ -37,7 +44,7 @@ paperwork.
 
 ## What runs automatically
 
-- CodeQL scans the Python on every push and weekly
+- CodeQL scans the Python on pushes to `main`, on pull requests, and weekly
   (`.github/workflows/codeql.yml`).
 - Dependabot opens weekly PRs for Python packages, both Docker base images
   and the GitHub Actions the workflows call (`.github/dependabot.yml`).

@@ -41,7 +41,10 @@ services:
     image: apache/kafka:4.3.1
     container_name: affinity-kafka
     ports:
-      - "9092:9092"
+      # Bound to 127.0.0.1, not 0.0.0.0: nothing here authenticates, and a
+      # published Docker port bypasses the host firewall. Drop the prefix only
+      # on a network you control.
+      - "127.0.0.1:9092:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -104,7 +107,7 @@ services:
     # MongoDB would otherwise size its cache from all of Docker's memory.
     command: ["mongod", "--wiredTigerCacheSizeGB", "1"]
     ports:
-      - "27018:27017"
+      - "127.0.0.1:27018:27017"
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -131,8 +134,13 @@ services:
       CHECKPOINT_ROOT: /checkpoints
       PYTHONPATH: /app
     volumes:
-      - ./:/app
-      - ./spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+      # Only what the job reads, and read-only: mounting the whole repository
+      # read-write let a container running as root leave root-owned files in
+      # the checkout. Checkpoints live in a named volume, below.
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./data:/app/data:ro
+      - ./spark-defaults.conf:/opt/spark/conf/spark-defaults.conf:ro
       - spark_checkpoints:/checkpoints
     # service_healthy / completed_successfully: Spark does not start against
     # a broker that is still booting or a topic that does not exist yet.
@@ -147,7 +155,7 @@ services:
         --conf spark.driver.memory=4g
         /app/src/streaming/job.py
     ports:
-      - "4040:4040"
+      - "127.0.0.1:4040:4040"
     restart: on-failure
 
   api:
@@ -155,7 +163,7 @@ services:
     container_name: affinity-api
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       mongo:
         condition: service_healthy
@@ -202,7 +210,7 @@ services:
       - --server.headless=true
       - --browser.gatherUsageStats=false
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
       api:
         condition: service_healthy
@@ -300,7 +308,7 @@ services:
     image: prom/prometheus:v2.54.1
     container_name: affinity-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -313,7 +321,7 @@ services:
     image: grafana/grafana:11.2.0
     container_name: affinity-grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       # Anonymous read-only access: this is a local demo.
       GF_AUTH_ANONYMOUS_ENABLED: "true"

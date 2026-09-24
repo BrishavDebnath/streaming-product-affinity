@@ -214,6 +214,41 @@ def test_cold_start_prefers_the_query_category_then_trending(api, client):
     assert "category" in body["message"]
 
 
+def test_the_cache_does_not_grow_without_end(api, client):
+    """Keys carry query parameters and the lookback minute, so the key space
+    grows on its own. Nothing used to remove an entry, on a catalogue of tens
+    of thousands of items."""
+    import src.api.main as main
+
+    add_trending(api, LAPTOP)
+    main._CACHE.clear()
+    for n in range(main.CACHE_MAX_KEYS + 40):
+        client.get(f"/trending?limit={(n % 50) + 1}&minutes={(n % 90) + 1}")
+    assert len(main._CACHE) <= main.CACHE_MAX_KEYS
+    assert main._COUNTERS["cache_entries"] == len(main._CACHE)
+
+    # Expired entries go even when the cache is far from full.
+    main._CACHE.clear()
+    main._CACHE["stale"] = (0.0, "old")           # epoch 1970
+    client.get("/trending")
+    assert "stale" not in main._CACHE
+
+
+def test_trending_reports_the_range_it_actually_summed(api, client):
+    """It used to take the first window of whichever product ranked first,
+    and an end from the window still being written, which is in the future."""
+    for offset in range(1, 6):
+        add_trending(api, XPS, offset=offset, events=5)
+    add_trending(api, LAPTOP, offset=1, events=500)   # ranks first, one window
+    body = client.get("/trending?limit=5&minutes=30").json()
+    started = datetime.fromisoformat(body["window_start"])
+    ended = datetime.fromisoformat(body["window_end"])
+    if started.tzinfo is None:                 # mongomock hands back naive UTC
+        started, ended = started.replace(tzinfo=timezone.utc), ended.replace(tzinfo=timezone.utc)
+    assert started == min(minute(o) for o in range(1, 6)), "the oldest window summed"
+    assert ended <= datetime.now(timezone.utc), "never a window from the future"
+
+
 def test_unknown_product_is_rejected(client):
     response = client.get(f"/related-products/{UNKNOWN}")
     assert response.status_code == 404

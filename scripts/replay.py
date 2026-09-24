@@ -23,6 +23,7 @@ the pipeline's upserts overwrite rather than double-count.
 import argparse
 import json
 import logging
+import math
 import signal
 import sys
 import time
@@ -53,7 +54,23 @@ CO_VIEW_GAP_SECONDS = 120
 # reserved product id, so they can form no pairs, and their trending rows are
 # deleted again below.
 FLUSH_PRODUCT = -1
-FLUSH_MINUTES = 10
+
+
+def _minutes(interval: str) -> int:
+    """'2 minutes' -> 2. Rounds up, so a sub-minute setting still counts."""
+    number = float(interval.split()[0])
+    unit = interval.split()[1].rstrip("s") if len(interval.split()) > 1 else "minute"
+    seconds = number * {"second": 1, "minute": 60, "hour": 3600}.get(unit, 60)
+    return max(1, math.ceil(seconds / 60))
+
+
+# How far past the replay the watermark events reach. Exactly far enough to
+# close the last pair windows, and no further: every minute beyond this is a
+# minute during which the pipeline ignores live events, because Spark drops
+# anything older than the watermark those events set. It used to be a flat 10,
+# which blacked out roughly 8 minutes of demo traffic after every replay.
+FLUSH_MINUTES = (_minutes(config.COOCCURRENCE_WINDOW) + _minutes(config.CO_VIEW_GAP)
+                 + _minutes(config.WATERMARK) + 1)
 
 # Where a finished replay records what it covered, for scripts/evaluate.py to
 # check its training window against.
@@ -192,6 +209,11 @@ def flush_windows(producer, after: float) -> int:
     producer.flush()
     log.info("sent %s watermark events (product %s), reaching %s minutes past "
              "the replay", FLUSH_MINUTES, FLUSH_PRODUCT, FLUSH_MINUTES)
+    blackout = FLUSH_MINUTES - _minutes(config.WATERMARK)
+    log.warning("these move the watermark ahead, so for about %s minutes the "
+                "pipeline ignores events stamped now: dashboard clicks and the "
+                "demo producer. Stop the producer during a replay "
+                "(docker compose stop producer) if that matters.", blackout)
     return FLUSH_MINUTES
 
 
