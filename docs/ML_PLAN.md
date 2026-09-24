@@ -1,6 +1,8 @@
 # Adding machine learning: the plan
 
-Written September 2026, after v1.0.0. Nothing in this document is built yet.
+Written September 2026, after v1.0.0. Phase 1 is built and measured (the
+category baseline and the category fill, live at +5.4 points); everything
+from phase 2 on is still a plan.
 Every number in it was measured on the RetailRocket data with the scripts in
 [experiments/ml-feasibility/](../experiments/ml-feasibility/), and every idea
 was tested before it was kept or dropped. Start here when the ML work begins.
@@ -9,8 +11,8 @@ was tested before it was kept or dropped. Start here when the ML work begins.
 
 Do this, in this order:
 
-1. **Fix the baseline first (no ML).** The README compares the pipeline with
-   global bestsellers, and that baseline is too weak. The ten most-viewed items
+1. **Fix the baseline first (no ML). DONE.** The README used to compare the
+   pipeline with global bestsellers, and that baseline was too weak. The ten most-viewed items
    in the *query's own category* score about as well as the pipeline does, at
    100% coverage. Report that baseline, and use it to fill the empty slots,
    which on its own lifts hit-rate@10 from 15.2% to 26.8% on the offline

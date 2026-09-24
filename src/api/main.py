@@ -38,6 +38,11 @@ _db = _client[config.MONGO_DB]
 _CACHE: dict[str, tuple] = {}
 
 
+# An upper bound on cached entries. Reached only by unusual query parameters:
+# the endpoints themselves use a handful of keys each.
+CACHE_MAX_KEYS = 256
+
+
 def _cached(key: str, builder, ttl: float | None = None):
     """
     Tiny read-through cache. The underlying aggregates only change once per
@@ -56,7 +61,27 @@ def _cached(key: str, builder, ttl: float | None = None):
     value = builder()
     _CACHE[key] = (now, value)
     _COUNTERS["cache_misses"] += 1
+    _evict(now)
     return value
+
+
+def _evict(now: float) -> None:
+    """Keep the cache bounded.
+
+    Keys carry query parameters and, for the category index, the lookback
+    minute, so the key space grows on its own: a new category-index entry
+    every minute, each holding a row per catalogued item. Nothing used to
+    remove them. Anything past the longest TTL goes, and if that is not
+    enough the oldest entries go until the cache is back under CACHE_MAX_KEYS.
+    """
+    longest = max(config.CACHE_TTL_SECONDS, config.GRAPH_CACHE_SECONDS)
+    for key in [k for k, (at, _) in _CACHE.items() if now - at > longest]:
+        _CACHE.pop(key, None)
+    if len(_CACHE) > CACHE_MAX_KEYS:
+        for key, _ in sorted(_CACHE.items(), key=lambda kv: kv[1][0])[
+                :len(_CACHE) - CACHE_MAX_KEYS]:
+            _CACHE.pop(key, None)
+    _COUNTERS["cache_entries"] = len(_CACHE)
 
 
 _COUNTERS: dict[str, int] = {
@@ -170,8 +195,13 @@ def _trending_uncached(limit, minutes, latest):
              "peak_users_per_window": d.get("peak_users_per_window"),
              "windows": d["windows"]} for d in agg]
 
-    body = {"window_start": agg[0]["first_window"] if agg else None,
-            "window_end": latest.get("window_end"),
+    # The range these numbers actually cover: the oldest window any returned
+    # product was counted in, and the newest window any of them ended in. It
+    # used to take the first window of whichever product ranked first, and an
+    # end from the window still being written, which could be in the future.
+    body = {"window_start": min((d["first_window"] for d in agg), default=None),
+            "window_end": max((d["last_window"] for d in agg), default=None)
+            if agg else latest.get("window_end"),
             "minutes": minutes,
             "count": len(rows),
             "trending": catalog.enrich(rows)}

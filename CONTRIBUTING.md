@@ -16,9 +16,9 @@ For work on the code itself:
 
 ```bash
 python -m venv .venv
-.venv/bin/activate                    # Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate             # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements-test.txt  # includes requirements.txt
-pytest                                # 133 tests, no Kafka or MongoDB needed
+pytest                                # 137 tests, no Kafka or MongoDB needed
 ruff check . && mypy                  # the same checks CI runs
 ```
 

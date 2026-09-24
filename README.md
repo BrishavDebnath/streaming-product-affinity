@@ -189,7 +189,7 @@ The first one is a slow memory leak. It looks fine in a five-minute demo and tak
 
 **Exactly-once results across a crash.** `docker compose run --rm recovery` kills the Spark container mid-stream with SIGKILL, restarts it, and checks that every event Kafka acknowledged was counted exactly once. Spark picks up from the offsets and state in its checkpoint. A batch cut short by the kill runs again, and the upserts make that harmless.
 
-**Cold start is handled openly.** A product with no pair data yet gets trending products back, and the response says `"source": "trending_fallback"` so nobody mistakes one for the other.
+**Cold start is handled openly.** A product with no pair data yet gets the most active products in its own category, and the response says `"source": "category_fallback"`. If the category has nothing either, it falls through to trending and says `"trending_fallback"`. Nobody has to guess which happened.
 
 ## Real traffic, and whether the recommendations are any good
 
@@ -250,7 +250,7 @@ Everything runs on one machine's cores, so these figures describe a laptop, not 
 
 ## Tests
 
-There are 133 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
+There are 137 tests, and none of them need Kafka or MongoDB running. They fall into four groups:
 
 | What | How | Where it runs |
 |---|---|---|
@@ -259,7 +259,7 @@ There are 133 tests, and none of them need Kafka or MongoDB running. They fall i
 | The dashboard | Streamlit's `AppTest` runs the real page against the real API | `pytest tests/test_dashboard.py` |
 | The real-data path | sessions, replay timing and the evaluation, plus the whole evaluation script over a fake pair table | `pytest tests/test_data.py` |
 
-The Spark group also runs as a plain script. `spark-submit tests/test_transforms.py` runs it inside the Spark container without pytest and reports its 172 individual checks. `pytest` turns any failed check into a failed test, so both routes agree. The Spark group starts a JVM and one Python process per core, so leave it a couple of gigabytes free. On a laptop that's already running the stack, use the container route.
+The Spark group also runs as a plain script. `spark-submit tests/test_transforms.py` runs it inside the Spark container without pytest and reports its 187 individual checks. `pytest` turns any failed check into a failed test, so both routes agree. The Spark group starts a JVM and one Python process per core, so leave it a couple of gigabytes free. On a laptop that's already running the stack, use the container route.
 
 What the tests cover:
 
@@ -279,7 +279,7 @@ What the tests cover:
 
 The transforms are pure `DataFrame` in, `DataFrame` out functions in `src/streaming/transforms.py`, and that's what makes all of this testable. Streaming logic you can only check by watching a dashboard can't be refactored safely.
 
-On every push, GitHub Actions (`.github/workflows/ci.yml`) runs `ruff` and `mypy`, then the full test suite on Python 3.11 and 3.12 with a coverage summary. Then it brings up the whole stack with `docker compose up` and runs the end-to-end check against it. CodeQL scans the code for security issues on every push and once a week.
+On every push, GitHub Actions (`.github/workflows/ci.yml`) runs `ruff` and `mypy`, then the full test suite on Python 3.11 and 3.12 with a coverage summary. Then it brings up the whole stack with `docker compose up` and runs the end-to-end check against it. CodeQL scans the code for security issues on pushes to `main`, on pull requests, and once a week.
 
 ```bash
 pytest                      # everything, with coverage: make test-all
@@ -299,7 +299,7 @@ ruff check . && mypy        # the same lint and type checks CI runs: make lint
 | `GET /stats` | collection counts, latest window, request counters |
 | `GET /metrics` | Prometheus text format |
 
-`/related-products` and `/graph` can give three kinds of answer. They use the recent lookback when it has data. When it's empty, they apply the same lookback to the newest data that exists and say so in the response (`"window": "latest_available"`, with `as_of` giving its age). They don't drop the time limit altogether, because on 1.5M pair rows that means a scan with no index and an all-time popularity chart. Only when there are no pairs at all does `/related-products` fall back to trending. `/trending` never widens. It reports the last N minutes and, if those are empty, says how old the newest window is.
+`/related-products` and `/graph` can give three kinds of answer. They use the recent lookback when it has data. When it's empty, they apply the same lookback to the newest data that exists and say so in the response (`"window": "latest_available"`, with `as_of` giving its age). They don't drop the time limit altogether, because on 1.5M pair rows that means a scan with no index and an all-time popularity chart. When co-occurrence has fewer answers than asked for, the empty slots go to the query category's most active products, and each row says which it is. Only when there are no pairs and no category does `/related-products` fall back to trending. `/trending` never widens. It reports the last N minutes and, if those are empty, says how old the newest window is.
 
 ```bash
 curl localhost:8000/related-products/9001 | jq
@@ -413,12 +413,14 @@ MIT. See [LICENSE](LICENSE).
 
 ## Roadmap
 
-This is planned and not built yet. The full plan, with the measurements behind
-every choice, is in [docs/ML_PLAN.md](docs/ML_PLAN.md).
+The first item below is built and measured. The rest is planned. The full
+plan, with the measurements behind every choice, is in
+[docs/ML_PLAN.md](docs/ML_PLAN.md).
 
 Each idea was tested offline on RetailRocket before it made the list. Two
 survived. The first is a fairer baseline and a better fallback: the ten
-most-viewed items in the query's own category, which needs no ML. The second
+most-viewed items in the query's own category, which needs no ML. That one
+shipped, and the numbers above include it. The second
 is a learned re-ranker, where LightGBM orders candidates from co-occurrence,
 the category and item embeddings using features the stream already computes.
 Offline it beat the best non-ML method by 3.0 to 3.6 points of hit-rate@10 in

@@ -668,3 +668,27 @@ def test_the_category_baseline_answers_from_the_query_category():
     # Scored like any model: the query itself never counts as a hit.
     cases = [ev.Case("s", 3, 1, (1,)), ev.Case("t", 11, 10, (10,))]
     assert ev.evaluate("category", cases, recommend, 2).hit_rate == 1.0
+
+
+def test_the_flush_reaches_only_as_far_as_it_must():
+    """Every minute the watermark events reach past the replay is a minute in
+    which Spark ignores live events: they are older than the watermark those
+    events set. A flat ten minutes blacked out about eight minutes of demo
+    traffic after every replay."""
+    from src.common import config
+
+    replay = load_script("replay.py")
+    needed = (replay._minutes(config.COOCCURRENCE_WINDOW)
+              + replay._minutes(config.CO_VIEW_GAP)
+              + replay._minutes(config.WATERMARK))
+    assert needed + 1 == replay.FLUSH_MINUTES, "one minute of margin, no more"
+    assert replay._minutes("2 minutes") == 2
+    assert replay._minutes("1 minute") == 1
+    assert replay._minutes("30 seconds") == 1, "rounds up, never to zero"
+
+    producer = FakeProducer()
+    replay.flush_windows(producer, after=1_000.0)
+    stamps = [e["timestamp"] for e in producer.sent]
+    assert max(stamps) - 1_000.0 == replay.FLUSH_MINUTES * 60
+    # Still enough to close the last pair window, which is the whole point.
+    assert max(stamps) - 1_000.0 >= needed * 60

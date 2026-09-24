@@ -14,7 +14,7 @@ every user is continuously active, so "same 10-minute window" stops meaning
 ```
 20 events/s ÷ 50 users × 10 min = 240 events per user per window
 240 events → 240×239/2          = 28,680 pairs per user
-× 50 users                      = 1,314,500 pairs      (~73x too many)
+× 50 users                      = 1,434,000 pairs      (~73x too many)
 ```
 
 Observed in production: 638,467 co-occurrences for a single pair. The number

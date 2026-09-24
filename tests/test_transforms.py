@@ -1088,6 +1088,19 @@ def test_type_checking_survives_third_party_stubs():
           and "follow_imports_for_stubs = true" in cfg)
 
 
+def test_percentiles_use_the_rank_they_claim():
+    """round(x + 0.5) is not ceil: on an exact tie Python rounds to even, so
+    p95 of 20 samples returned the maximum and p50 of 10 returned the sixth."""
+    from src.common.bench import percentile
+
+    check("p50 of 1..10 is the 5th value", percentile(list(range(1, 11)), 50) == 5)
+    check("p95 of 1..20 is the 19th value, not the maximum",
+          percentile(list(range(1, 21)), 95) == 19)
+    check("p50 of 1..9 is the 5th value", percentile(list(range(1, 10)), 50) == 5)
+    check("p100 is the maximum", percentile(list(range(1, 21)), 100) == 20)
+    check("an empty list has no percentile", percentile([], 50) is None)
+
+
 def test_every_action_is_pinned_to_a_commit():
     """A tag is a moving pointer: whoever controls the action repository can
     repoint v7 at new code, and it runs with this workflow's permissions on
@@ -1302,8 +1315,10 @@ def main():
     test_progress_listener_records_spark_progress()
     test_kafka_lag_arithmetic()
     test_benchmark_helpers()
+    test_percentiles_use_the_rank_they_claim()
     test_benchmark_tools_are_wired()
     test_kafka_clients_use_only_known_settings()
+    test_every_action_is_pinned_to_a_commit()
     test_type_checking_survives_third_party_stubs()
     test_real_data_tools_are_wired()
     test_test_dependencies_are_declared()
