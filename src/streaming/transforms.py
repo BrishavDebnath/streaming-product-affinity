@@ -153,7 +153,12 @@ def trending(events: DataFrame,
         events.groupBy(bucket, F.col("product_id"))
         .agg(F.count("*").alias("event_count"),
              F.sum("weight").alias("score"),
-             F.approx_count_distinct("user_id").alias("unique_users"))
+             F.approx_count_distinct("user_id").alias("unique_users"),
+             # Split by type for the re-ranker's popularity and cart-rate
+             # features. The weighted score mixes them and cannot be undone.
+             *(F.sum(F.when(F.col("event_type") == name, 1).otherwise(0)).alias(alias)
+               for name, alias in (("view", "views"), ("add_to_cart", "carts"),
+                                   ("purchase", "purchases"))))
         .select(
             F.col("window.start").alias("window_start"),
             F.col("window.end").alias("window_end"),
@@ -161,6 +166,9 @@ def trending(events: DataFrame,
             F.col("event_count"),
             F.round(F.col("score"), 3).alias("score"),
             F.col("unique_users"),
+            F.col("views"),
+            F.col("carts"),
+            F.col("purchases"),
         )
     )
 

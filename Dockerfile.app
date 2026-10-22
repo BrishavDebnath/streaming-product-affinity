@@ -12,8 +12,9 @@ WORKDIR /app
 
 # Graphviz draws the affinity graph on the server, so the dashboard can show a
 # pair's count in a hover box instead of printing thirty overlapping numbers.
+# LightGBM's wheel links against OpenMP (libgomp1), which slim images lack.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends graphviz fonts-dejavu-core \
+ && apt-get install -y --no-install-recommends graphviz fonts-dejavu-core libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

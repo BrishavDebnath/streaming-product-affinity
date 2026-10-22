@@ -120,6 +120,33 @@ def evaluate(name: str, cases: Iterable[Case],
     return Result(name, len(cases), hits, any_hits, answered)
 
 
+def hits_per_case(cases: Iterable[Case], recommend: Callable[[int], list[int]],
+                  k: int = 10) -> list[int]:
+    """1 or 0 for each case, scored exactly as `evaluate` scores it."""
+    return [int(case.target in [i for i in recommend(case.query) if i != case.query][:k])
+            for case in cases]
+
+
+def paired_bootstrap(a: list[int], b: list[int], draws: int = 1000,
+                     seed: int = 7) -> tuple[float, float, float]:
+    """Mean of a - b over the same cases, with a 95% interval.
+
+    Resampling the CASES, not each model separately, keeps the pairing: a
+    case that is easy for one model is usually easy for the other, and
+    ignoring that makes the interval much wider than it should be.
+    """
+    import random
+
+    if len(a) != len(b) or not a:
+        raise ValueError("need two equal, non-empty lists of per-case hits")
+    diff = [x - y for x, y in zip(a, b, strict=True)]
+    rng = random.Random(seed)
+    n = len(diff)
+    means = sorted(sum(diff[rng.randrange(n)] for _ in range(n)) / n
+                   for _ in range(draws))
+    return (sum(diff) / n, means[int(0.025 * draws)], means[int(0.975 * draws) - 1])
+
+
 def lift(model: Result, baseline: Result) -> float | None:
     """How many times better than the baseline. None if the baseline is 0."""
     if not baseline.hit_rate:

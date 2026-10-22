@@ -369,7 +369,7 @@ def write_report(rows, pair_values, pair_lost, env, partitions, args, trigger):
         "- **Join state rows** is the number of recent events the co-occurrence "
         "join holds to find pairs. It grows with the rate but stays bounded by the "
         f"{hyphenate(config.CO_VIEW_GAP)} co-view gap, and RocksDB keeps it "
-        "off the JVM heap (ADR 0001, ADR 0009).",
+        "off the JVM heap (ADR 0001).",
         "- **Event to trending row** is measured with probe events: the time "
         "from sending one event until its trending row is written. It "
         "includes up to one trigger interval of waiting "

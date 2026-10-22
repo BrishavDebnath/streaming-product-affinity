@@ -20,6 +20,8 @@ from pymongo import DESCENDING, MongoClient
 from pymongo.errors import PyMongoError
 
 from src.common import catalog, config, scoring
+from src.ranking import features as ranking_features
+from src.ranking import model as ranking_model
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-8s api | %(message)s")
@@ -74,7 +76,8 @@ def _evict(now: float) -> None:
     remove them. Anything past the longest TTL goes, and if that is not
     enough the oldest entries go until the cache is back under CACHE_MAX_KEYS.
     """
-    longest = max(config.CACHE_TTL_SECONDS, config.GRAPH_CACHE_SECONDS)
+    longest = max(config.CACHE_TTL_SECONDS, config.GRAPH_CACHE_SECONDS,
+                  config.RANKER_SNAPSHOT_SECONDS)
     for key in [k for k, (at, _) in _CACHE.items() if now - at > longest]:
         _CACHE.pop(key, None)
     if len(_CACHE) > CACHE_MAX_KEYS:
@@ -90,6 +93,8 @@ _COUNTERS: dict[str, int] = {
     "requests_total": 0,
     "related_served": 0,
     "related_fallback": 0,
+    "ranker_served": 0,
+    "ranker_fallback": 0,
     "errors_total": 0,
 }
 
@@ -262,7 +267,7 @@ def _category_bestsellers(product_id: int, cutoff, exclude: set[int],
 def related_products(product_id: int,
                     limit: int = Query(default=config.DEFAULT_LIMIT, ge=1, le=50),
                     score_by: str = Query(default="affinity",
-                                          pattern="^(affinity|lift|pmi)$")):
+                                          pattern="^(affinity|lift|pmi|learned)$")):
     """
     "Users who interacted with this product also interacted with..."
 
@@ -270,12 +275,28 @@ def related_products(product_id: int,
     cold-start case every related-items feature has to answer for. The
     response says which path was taken rather than pretending they are the
     same thing.
+
+    `score_by=learned` re-ranks candidates from several sources with the
+    trained model (src/ranking). Without a usable model it answers as
+    `affinity` would, and `learned_unavailable` says why.
     """
     _COUNTERS["requests_total"] += 1
     if catalog.get(product_id) is None:
         raise HTTPException(status_code=404,
                             detail=f"Unknown product_id {product_id}")
 
+    if score_by == "learned":
+        body, reason = _learned(product_id, limit)
+        if body is not None:
+            return body
+        _COUNTERS["ranker_fallback"] += 1
+        body = _related(product_id, limit, "affinity")
+        body["learned_unavailable"] = reason
+        return body
+    return _related(product_id, limit, score_by)
+
+
+def _related(product_id: int, limit: int, score_by: str) -> dict:
     cutoff = datetime.now(timezone.utc) - timedelta(
         minutes=config.PAIR_LOOKBACK_MINUTES)
     pipeline: list[dict] = [
@@ -374,6 +395,76 @@ def related_products(product_id: int,
                         if by_category else
                         "No co-occurrence data for this product yet; "
                         "showing trending products instead.")}
+
+
+_RANKER: dict = {"loaded": False, "ranker": None, "error": None}
+_RANKER_TIMING = {"seconds_sum": 0.0, "count": 0}
+
+
+def _ranker():
+    """The trained model, loaded once. None, with the reason, if unusable."""
+    if not _RANKER["loaded"]:
+        _RANKER["loaded"] = True
+        try:
+            _RANKER["ranker"] = ranking_model.load(config.RANKER_DIR)
+        except ranking_model.ModelError as exc:
+            _RANKER["error"] = str(exc)
+        except Exception as exc:                        # noqa: BLE001
+            _RANKER["error"] = f"the model could not be loaded: {exc}"
+            log.exception("loading the ranker failed")
+    return _RANKER["ranker"], _RANKER["error"]
+
+
+def _category_of(product_id: int) -> str | None:
+    category = (catalog.get(product_id) or {}).get("category")
+    return None if category in (None, "uncategorised") else category
+
+
+def _learned(product_id: int, limit: int) -> tuple[dict | None, str | None]:
+    """Answer with the re-ranker, or (None, reason) to fall back."""
+    ranker, error = _ranker()
+    if ranker is None:
+        return None, error
+    replay_run = _cached("replay-run", lambda: _db["replay_runs"].find_one(
+        sort=[("finished_at", DESCENDING)]))
+    problem = ranker.check_window(replay_run)
+    if problem:
+        return None, problem
+
+    started = time.perf_counter()
+    try:
+        cutoff = ranking_features.anchored_cutoff(_db)
+        minute = cutoff.replace(second=0, microsecond=0).isoformat() if cutoff else "all"
+        # The whole-window aggregates take seconds on a replayed month and
+        # change only once per trigger, so they are rebuilt at most every few
+        # minutes, like the graph.
+        snap = _cached(f"ranker-snapshot:{minute}", lambda: ranking_features.Snapshot
+                       .from_mongo(_db, cutoff, category_of=_category_of,
+                                   parent=ranker.parent, embeddings=ranker.embeddings),
+                       ttl=config.RANKER_SNAPSHOT_SECONDS)
+        nbrs = ranking_features.neighbours_from_mongo(_db, product_id, cutoff)
+        cands, matrix, origin = ranking_features.rows(product_id, nbrs, snap)
+    except PyMongoError as exc:
+        _COUNTERS["errors_total"] += 1
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not cands:
+        return None, "no candidates for this product"
+    scores = ranker.score(matrix)
+    order = sorted(range(len(cands)), key=lambda i: -scores[i])[:limit]
+    _RANKER_TIMING["seconds_sum"] += time.perf_counter() - started
+    _RANKER_TIMING["count"] += 1
+    _COUNTERS["ranker_served"] += 1
+    rows = [{"product_id": cands[i], "score": round(float(scores[i]), 4),
+             "pair_count": nbrs.get(cands[i], 0), "candidate_from": origin[cands[i]],
+             "source": "learned"} for i in order]
+    return {"product_id": product_id,
+            "source": "learned",
+            "ranked_by": "learned",
+            "model_version": ranker.version,
+            "candidates": len(cands),
+            "lookback_minutes": config.PAIR_LOOKBACK_MINUTES,
+            "count": len(rows),
+            "related_products": catalog.enrich(rows)}, None
 
 
 def _product_counts(cutoff):
@@ -608,6 +699,17 @@ def metrics():
         f'{_COUNTERS["related_served"]}',
         f'affinity_related_products_total{{source="trending_fallback"}} '
         f'{_COUNTERS["related_fallback"]}',
+        f'affinity_related_products_total{{source="learned"}} '
+        f'{_COUNTERS["ranker_served"]}',
+        "# HELP affinity_ranker_fallback_total Learned requests answered by "
+        "affinity because no usable model was there.",
+        "# TYPE affinity_ranker_fallback_total counter",
+        f"affinity_ranker_fallback_total {_COUNTERS['ranker_fallback']}",
+        "# HELP affinity_ranker_seconds Time to build features and score, per "
+        "learned answer.",
+        "# TYPE affinity_ranker_seconds summary",
+        f"affinity_ranker_seconds_sum {_RANKER_TIMING['seconds_sum']:.6f}",
+        f"affinity_ranker_seconds_count {_RANKER_TIMING['count']}",
         "# HELP affinity_cache_total API read-through cache outcomes.",
         "# TYPE affinity_cache_total counter",
         f'affinity_cache_total{{result="hit"}} {_COUNTERS["cache_hits"]}',

@@ -1,11 +1,22 @@
 # Adding machine learning: the plan
 
-Written September 2026, after v1.0.0. Phase 1 is built and measured (the
-category baseline and the category fill, live at +5.4 points); everything
-from phase 2 on is still a plan.
-Every number in it was measured on the RetailRocket data with the scripts in
-[experiments/ml-feasibility/](../experiments/ml-feasibility/), and every idea
-was tested before it was kept or dropped. Start here when the ML work begins.
+Written September 2026, after v1.0.0, and updated in October 2026.
+
+**Status:** phases 1 to 4 are built. Phase 1 is the category baseline and
+category fill. Phases 2 to 4 are the wider candidates, per-type counts in
+trending, the shared feature function in `src/ranking/features.py`,
+`scripts/train_ranker.py`, and `score_by=learned` in the API. Phase 5 is
+partly built: the API exports the ranker's latency and fallback count, but
+there is no Grafana row or model-age alert yet.
+
+Live, through the API on the published split, the re-ranker scored 34.00%
+hit-rate@10 against 26.23% for affinity on the same 3,000 cases: +7.77
+points, 95% interval +6.43 to +9.00. That is one test week; phase 4 asks for
+three. Details are in [EVALUATION.md](EVALUATION.md).
+
+The offline numbers below were measured on the RetailRocket data with the
+scripts in [experiments/ml-feasibility/](../experiments/ml-feasibility/), and
+every idea was tested before it was kept or dropped.
 
 ## The short version
 

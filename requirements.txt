@@ -19,3 +19,6 @@ streamlit>=1.50        # width="stretch"
 pandas>=2.0,<3.0
 requests>=2.32
 python-dotenv>=1.0
+# The API scores candidates with the trained re-ranker (src/ranking).
+numpy>=1.26
+lightgbm>=4.5

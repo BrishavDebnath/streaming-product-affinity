@@ -27,3 +27,5 @@ replay_pid*.log
 # The RetailRocket download (1.4 GB) and the catalogue built from it.
 data/raw/
 data/*.json
+
+models/

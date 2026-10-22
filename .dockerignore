@@ -14,3 +14,4 @@ tests
 .ruff_cache
 .pytest_cache
 *.log
+models

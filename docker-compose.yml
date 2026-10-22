@@ -164,6 +164,14 @@ services:
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "127.0.0.1:8000:8000"
+    # models/ holds the re-ranker scripts/train_ranker.py writes. Empty is
+    # fine: score_by=learned then answers as affinity and says why.
+    environment:
+      <<: *app-env
+      RANKER_DIR: /app/models/ranker
+    volumes:
+      - ./data:/app/data:ro
+      - ./models:/app/models:ro
     depends_on:
       mongo:
         condition: service_healthy

@@ -132,6 +132,9 @@ def test_trending(spark):
           out[9001]["unique_users"] == 2, str(out[9001]["unique_users"]))
     check("trending emits window bounds",
           out[9001]["window_start"] is not None and out[9001]["window_end"] is not None)
+    check("trending splits counts by event type for the re-ranker",
+          (out[9001]["views"], out[9001]["carts"], out[9001]["purchases"]) == (5, 0, 1),
+          str({k: (v["views"], v["carts"], v["purchases"]) for k, v in out.items()}))
 
 
 def test_trending_separates_windows(spark):

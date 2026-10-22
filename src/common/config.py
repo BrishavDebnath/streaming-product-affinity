@@ -155,7 +155,8 @@ MIN_PAIR_COUNT = _int("MIN_PAIR_COUNT", 3)
 TRENDING_LOOKBACK_MINUTES = _int("TRENDING_LOOKBACK_MINUTES", 30)
 
 # Schema version the producer stamps on new events. Older events without the
-# field are treated as v1 and still parse - see docs/adr/0006.
+# field are treated as v1 and still parse (see parse_events in
+# src/streaming/transforms.py).
 SCHEMA_VERSION = _int("SCHEMA_VERSION", 2)
 # Fraction of events deliberately emitted in the OLD v1 format, to prove the
 # pipeline tolerates a partially-upgraded fleet of producers.
@@ -175,6 +176,15 @@ CACHE_TTL_SECONDS = _float("CACHE_TTL_SECONDS", 5.0)
 # seconds, measured. Recomputing that every five seconds would keep one core
 # busy for nobody's benefit, so it gets its own, longer TTL.
 GRAPH_CACHE_SECONDS = _float("GRAPH_CACHE_SECONDS", 30.0)
+
+# --- learned re-ranker (src/ranking, scripts/train_ranker.py) ---------------
+# Where the trained model lives. Missing is fine: score_by=learned then
+# answers as affinity does and says why.
+RANKER_DIR = os.getenv("RANKER_DIR", str(Path(__file__).resolve().parents[2]
+                                         / "models" / "ranker"))
+# The ranker's whole-window aggregates group every pair row in the lookback,
+# like the graph, so they are rebuilt at most this often.
+RANKER_SNAPSHOT_SECONDS = _float("RANKER_SNAPSHOT_SECONDS", 300.0)
 
 EVENT_TYPES = ("view", "click", "add_to_cart", "purchase", "search")
 

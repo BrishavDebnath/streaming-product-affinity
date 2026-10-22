@@ -237,9 +237,14 @@ def main() -> int:
                         help="sample this many test cases (0 = all)")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--source", choices=["api", "mongo"], default="api")
-    parser.add_argument("--score-by", choices=["affinity", "lift", "pmi"],
+    parser.add_argument("--score-by", choices=["affinity", "lift", "pmi", "learned"],
                         default="affinity",
                         help="how the API should rank co-occurring products")
+    parser.add_argument("--compare-to", choices=["affinity", "lift", "pmi", "learned"],
+                        default=None,
+                        help="with --source api, also score this ranking on the same "
+                             "cases and report the difference with a paired "
+                             "bootstrap 95%% interval")
     parser.add_argument("--allow-window-mismatch", action="store_true",
                         help="evaluate even when the training window is not "
                              "the one that was replayed (the result will "
@@ -311,6 +316,20 @@ def main() -> int:
     model = ev.evaluate(f"pipeline ({args.source})", cases, recommender, args.k)
     ratio = ev.lift(model, baseline)
 
+    comparison = None
+    if args.compare_to and args.source == "api":
+        other = ApiRecommender(config.API_BASE_URL, args.k, args.compare_to)
+        mine = ev.hits_per_case(cases, recommender, args.k)
+        theirs = ev.hits_per_case(cases, other, args.k)
+        gain, lo, hi = ev.paired_bootstrap(mine, theirs)
+        comparison = {"against": args.compare_to, "their_hit_rate": sum(theirs) / len(theirs),
+                      "gain_points": round(100 * gain, 2),
+                      "interval_points": [round(100 * lo, 2), round(100 * hi, 2)],
+                      "their_sources": dict(other.sources)}
+        log.info("%s vs %s on the same %s cases: %+.2f points (95%% interval %+.2f to "
+                 "%+.2f)", args.score_by, args.compare_to, f"{len(cases):,}",
+                 100 * gain, 100 * lo, 100 * hi)
+
     # A serving layer that does not recognise the products is not a model
     # scoring zero - it is a misconfiguration, and reporting 0.000% as a
     # result would be worse than reporting nothing.
@@ -347,6 +366,10 @@ def main() -> int:
          f"{model.any_hit_rate:.3%} vs {baseline.any_hit_rate:.3%}"),
         ("answer sources", ", ".join(f"{k}={v:,}" for k, v in
                                      sorted(recommender.sources.items()))),
+        *([(f"vs score_by={comparison['against']}",
+            f"{comparison['gain_points']:+.2f} points (95% interval "
+            f"{comparison['interval_points'][0]:+.2f} to "
+            f"{comparison['interval_points'][1]:+.2f})")] if comparison else []),
     ]))
     print()
 
@@ -370,6 +393,7 @@ def main() -> int:
         "points_over_category": (round(100 * (model.hit_rate - by_category.hit_rate), 2)
                                  if by_category else None),
         "sources": dict(recommender.sources),
+        "comparison": comparison,
         "seconds": round(time.time() - started, 1),
     }
     RESULTS.mkdir(exist_ok=True)
@@ -383,8 +407,15 @@ def main() -> int:
             "",
             f"| Model | hit-rate@{args.k} | Hits | Coverage |",
             "|---|---:|---:|---:|",
-            f"| **Pipeline** (co-occurrence, then category fill, served by the API) | "
-            f"**{model.hit_rate:.2%}** | {model.hits:,} | {model.coverage:.0%} |",
+            ("| **Pipeline, learned re-ranker** (LightGBM over co-occurrence, "
+             "category, item2vec and bestseller candidates, served by the API) | "
+             if args.score_by == "learned" else
+             "| **Pipeline** (co-occurrence, then category fill, served by the API) | ")
+            + f"**{model.hit_rate:.2%}** | {model.hits:,} | {model.coverage:.0%} |",
+            *([f"| Pipeline, score_by={comparison['against']} (same cases) | "
+               f"{comparison['their_hit_rate']:.2%} | "
+               f"{round(comparison['their_hit_rate'] * model.cases):,} | n/a |"]
+              if comparison else []),
             *([f"| Category bestsellers (top {args.k} of the query's category) | "
                f"{by_category.hit_rate:.2%} | {by_category.hits:,} | 100% |"]
               if by_category else []),

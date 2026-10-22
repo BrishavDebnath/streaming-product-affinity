@@ -508,6 +508,10 @@ def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
             return []
 
     monkeypatch.setattr(script, "ApiRecommender", NotFoundApi)
+    # No replay on record. Without this the test read whatever MongoDB was
+    # running on the machine, and a stack holding a real replay failed it on
+    # the window check before the 404 check it is about.
+    monkeypatch.setattr(script, "replayed_window", lambda: None)
     monkeypatch.setattr(script, "REPORT", tmp_path / "EVALUATION.md")
     monkeypatch.setattr(script, "RESULTS", tmp_path / "results")
     monkeypatch.setattr(sys, "argv", [
