@@ -2,12 +2,16 @@
 
 Written September 2026, after v1.0.0, and updated in October 2026.
 
-**Status:** phases 1 to 4 are built. Phase 1 is the category baseline and
-category fill. Phases 2 to 4 are the wider candidates, per-type counts in
-trending, the shared feature function in `src/ranking/features.py`,
-`scripts/train_ranker.py`, and `score_by=learned` in the API. Phase 5 is
-partly built: the API exports the ranker's latency and fallback count, but
-there is no Grafana row or model-age alert yet.
+**Status:** all five phases are built.
+
+1. Phase 1 is the category baseline and category fill.
+2. Phases 2 to 4 are the wider candidates, per-type counts in trending, the
+   shared feature function in `src/ranking/features.py`,
+   `scripts/train_ranker.py`, and `score_by=learned` in the API.
+3. Phase 5 is the monitoring. The API exports the ranker's latency,
+   fallbacks, model age and whether the model fits the served window.
+   Grafana has a row for them, and `monitoring/alerts.yml` has three alerts:
+   `RankerModelStale`, `RankerUnusable` and `RankerFallingBack`.
 
 Live, through the API on the published split, the re-ranker scored 34.00%
 hit-rate@10 against 26.23% for affinity on the same 3,000 cases: +7.77

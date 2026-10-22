@@ -102,6 +102,8 @@ Settings live in `.env` (copy `.env.example`); every value has a default. On mac
 
 The trainer and the API call the same feature function, so training and serving can't drift apart. The API refuses a model whose feature list differs from the code's, and item2vec vectors trained on a different replay window. In both cases it answers with plain affinity and says why.
 
+The dashboard's Related products panel switches between times seen together, lift and the learned model, and each row says which source proposed it. The API exports the model's age, whether it fits the data being served, its latency and its fallbacks. Grafana has a row for them, and Prometheus has three alerts: the model is over a week old, a model is loaded but can't be used, and learned requests keep falling back.
+
 ## Is it any good?
 
 The demo traffic is synthetic, so its "right answer" is the generator's own rule. Quality is measured on [RetailRocket](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset) instead: 2.7M real events from a real shop. Replay 30 days through Kafka, then test on the 7 days after, which the pipeline never saw. For each held-out visit, ask the live API about the first product. It's a hit if the next product the shopper viewed is in the top 10.

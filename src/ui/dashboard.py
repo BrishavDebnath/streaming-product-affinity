@@ -510,17 +510,39 @@ with right:
                               if p not in trending_ids]
     target = st.selectbox("Shoppers who viewed", options,
                           format_func=catalog.name_of)
-    data = api(f"/related-products/{target}?limit=8", quiet=True)
+    # A radio rather than another selectbox: the page's selectboxes are
+    # addressed by position in tests/test_dashboard.py.
+    ranked_by = st.radio(
+        "Ranked by", ["affinity", "lift", "learned"], horizontal=True,
+        format_func={"affinity": "Times seen together", "lift": "Lift",
+                     "learned": "Learned model"}.get,
+        help="Learned is a LightGBM model trained on real RetailRocket traffic. "
+             "On the demo catalogue it is not available, and the page says so.")
+    data = api(f"/related-products/{target}?limit=8&score_by={ranked_by}", quiet=True)
     if data is None:
         st.info("No data for this product yet.")
     if data and data.get("window") == "latest_available":
         st.caption("Nothing recent for this product, so these come from the "
                    "most recent data it has.")
+    if data and data.get("learned_unavailable"):
+        st.caption("The learned model can't answer here, so these are ranked "
+                   f"by times seen together: {data['learned_unavailable']}.")
     if data:
         why = {"co_occurrence": "viewed together",
                "category_bestsellers": "popular in the same category",
                "trending": "trending"}
-        if data["source"] == "trending_fallback":
+        # The learned model says which candidate source proposed each row.
+        learned_why = {"co_occurrence": "viewed together",
+                       "category": "popular in the same category",
+                       "item2vec": "appears in similar visits",
+                       "bestsellers": "bestseller"}
+        for r in data["related_products"]:
+            if r.get("source") == "learned":
+                r["source"] = None
+                r["why"] = learned_why.get(r.get("candidate_from"), "learned")
+        if data["source"] == "learned":
+            st.success("...also viewed these products, ordered by the learned model")
+        elif data["source"] == "trending_fallback":
             st.info("Not enough data for this product yet, so these are "
                     "trending products instead.")
         elif data["source"] == "category_fallback":
@@ -529,7 +551,8 @@ with right:
         else:
             st.success("...also viewed these products")
         rows = [{"Product": r["name"] or r["product_id"],
-                 "Why it's here": why.get(r.get("source"), r.get("source") or "trending"),
+                 "Why it's here": r.get("why") or why.get(r.get("source"),
+                                                          r.get("source") or "trending"),
                  "Times seen together": r.get("pair_count")}
                 for r in data["related_products"]]
         if rows:

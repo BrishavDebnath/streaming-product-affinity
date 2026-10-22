@@ -52,3 +52,33 @@ groups:
           severity: warning
         annotations:
           summary: "Streaming state for {{ $labels.query }} keeps growing (see ADR 0001)."
+
+      # The learned re-ranker (src/ranking). None of these fire when no model
+      # has been trained: score_by=learned then simply answers as affinity.
+      - alert: RankerModelStale
+        # Seven days is the label window it learns from: past that, a week of
+        # traffic it has never seen is being ranked by it.
+        expr: affinity_ranker_model_age_seconds > 7 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The re-ranker ({{ $labels.version }}) is over a week old."
+          description: "Retrain it: scripts/train_ranker.py, see README."
+
+      - alert: RankerUnusable
+        expr: affinity_ranker_loaded == 1 and affinity_ranker_usable == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A re-ranker is loaded but does not fit the data being served."
+          description: "Its item2vec vectors come from another replay window, or no replay is recorded, so score_by=learned is answering as affinity. The learned_unavailable field of /related-products says which."
+
+      - alert: RankerFallingBack
+        expr: rate(affinity_ranker_fallback_total[5m]) > 0 and affinity_ranker_usable == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "score_by=learned keeps falling back to affinity."

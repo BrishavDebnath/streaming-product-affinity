@@ -200,6 +200,38 @@ def test_showing_more_lines_shows_the_weaker_pairs(stack):
     assert not app.exception
 
 
+def test_choosing_the_learned_model_without_one_says_why(stack, monkeypatch, tmp_path):
+    fill(stack)
+    monkeypatch.setattr(config, "RANKER_DIR", str(tmp_path / "no-model"))
+    app = run()
+    app.radio[0].set_value("learned").run()
+    assert not app.exception, app.exception
+    captions = " ".join(c.value for c in app.caption)
+    assert "learned model can't answer here" in captions
+    assert "no trained model" in captions
+    table = next(d.value for d in app.dataframe if "Why it's here" in d.value.columns)
+    assert "viewed together" in set(table["Why it's here"])
+
+
+def test_the_learned_model_orders_the_rows_and_says_where_each_came_from(
+        stack, monkeypatch, tmp_path):
+    from tests.test_ranking import RUN, write_model
+
+    fill(stack)
+    write_model(tmp_path / "ranker")
+    stack._db["replay_runs"].insert_one(dict(RUN))
+    monkeypatch.setattr(config, "RANKER_DIR", str(tmp_path / "ranker"))
+    app = run()
+    app.radio[0].set_value("learned").run()
+    assert not app.exception, app.exception
+    assert any("ordered by the learned model" in s.value for s in app.success)
+    table = next(d.value for d in app.dataframe if "Why it's here" in d.value.columns)
+    reasons = set(table["Why it's here"])
+    assert reasons <= {"viewed together", "popular in the same category",
+                       "appears in similar visits", "bestseller"}, reasons
+    assert "viewed together" in reasons
+
+
 def test_empty_pipeline_explains_itself(stack):
     app = run()
     assert not app.exception

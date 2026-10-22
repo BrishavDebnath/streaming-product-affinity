@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,15 @@ class Ranker:
     @property
     def version(self) -> str:
         return str(self.metadata.get("version", "unknown"))
+
+    @property
+    def trained_at(self) -> datetime | None:
+        """When the trainer saved it: the version is that UTC timestamp."""
+        try:
+            return datetime.strptime(self.version, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            return None
 
     def score(self, matrix: np.ndarray) -> np.ndarray:
         if len(matrix) == 0:

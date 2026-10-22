@@ -194,6 +194,28 @@ def test_learned_ranks_with_the_model(api, tmp_path):
     metrics = client.get("/metrics").text
     assert 'affinity_related_products_total{source="learned"} 1' in metrics
     assert "affinity_ranker_seconds_count 1" in metrics
+    assert "affinity_ranker_loaded 1" in metrics and "affinity_ranker_usable 1" in metrics
+
+
+def test_model_age_is_exported_for_the_stale_model_alert(api, tmp_path):
+    write_model(tmp_path / "ranker")
+    meta = tmp_path / "ranker" / "metadata.json"
+    trained = datetime.now(timezone.utc) - timedelta(days=8)
+    meta.write_text(json.dumps({"version": trained.strftime("%Y%m%dT%H%M%SZ"),
+                                "feature_names": list(features.FEATURE_NAMES)}),
+                    encoding="utf-8")
+    metrics = TestClient(api.app).get("/metrics").text
+    line = next(x for x in metrics.splitlines()
+                if x.startswith("affinity_ranker_model_age_seconds{"))
+    assert 8 * 86400 - 60 < float(line.split()[-1]) < 8 * 86400 + 60
+    # No replay on record: loaded, but not usable for what is served.
+    assert "affinity_ranker_loaded 1" in metrics and "affinity_ranker_usable 0" in metrics
+
+
+def test_no_model_exports_not_loaded(api):
+    metrics = TestClient(api.app).get("/metrics").text
+    assert "affinity_ranker_loaded 0" in metrics
+    assert "affinity_ranker_model_age_seconds" not in metrics
 
 
 def test_learned_on_demo_traffic_falls_back(api, tmp_path):

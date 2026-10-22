@@ -245,6 +245,160 @@
           "legendFormat": "rejected events"
         }
       ]
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Learned re-ranker",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "title": "Re-ranker answers and fallbacks",
+      "description": "score_by=learned answered by the model, and answered by affinity because no usable model was there.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(affinity_related_products_total{source=\"learned\"}[1m])",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "learned"
+        },
+        {
+          "expr": "rate(affinity_ranker_fallback_total[1m])",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "fell back to affinity"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Re-ranker time per answer",
+      "description": "Features plus LightGBM scoring, averaged over 5 minutes. Measured at about 2 ms after a replayed month.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(affinity_ranker_seconds_sum[5m]) / rate(affinity_ranker_seconds_count[5m])",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "mean"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Model age",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "affinity-prometheus"
+      },
+      "description": "Since the loaded model was trained. RankerModelStale fires past 7 days.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 604800
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "affinity_ranker_model_age_seconds",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "affinity-prometheus"
+          },
+          "legendFormat": "{{version}}"
+        }
+      ]
     }
   ]
 }

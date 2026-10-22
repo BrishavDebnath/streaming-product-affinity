@@ -415,6 +415,39 @@ def _ranker():
     return _RANKER["ranker"], _RANKER["error"]
 
 
+def _ranker_model_metrics() -> list[str]:
+    """Whether a model is loaded, whether it fits the data being served, and
+    how old it is. The alerts in monitoring/alerts.yml read these."""
+    ranker, _ = _ranker()
+    usable = 0
+    if ranker is not None:
+        try:
+            run = _cached("replay-run", lambda: _db["replay_runs"].find_one(
+                sort=[("finished_at", DESCENDING)]))
+            usable = int(ranker.check_window(run) is None)
+        except PyMongoError:
+            usable = 0
+    lines = [
+        "# HELP affinity_ranker_loaded 1 when a trained re-ranker is loaded.",
+        "# TYPE affinity_ranker_loaded gauge",
+        f"affinity_ranker_loaded {int(ranker is not None)}",
+        "# HELP affinity_ranker_usable 1 when the loaded model's vectors fit the "
+        "replayed window, so score_by=learned is really answering.",
+        "# TYPE affinity_ranker_usable gauge",
+        f"affinity_ranker_usable {usable}",
+    ]
+    trained = ranker.trained_at if ranker is not None else None
+    if ranker is not None and trained is not None:
+        age = (datetime.now(timezone.utc) - trained).total_seconds()
+        lines += [
+            "# HELP affinity_ranker_model_age_seconds Seconds since the loaded "
+            "model was trained.",
+            "# TYPE affinity_ranker_model_age_seconds gauge",
+            f'affinity_ranker_model_age_seconds{{version="{ranker.version}"}} {age:.0f}',
+        ]
+    return lines
+
+
 def _category_of(product_id: int) -> str | None:
     category = (catalog.get(product_id) or {}).get("category")
     return None if category in (None, "uncategorised") else category
@@ -730,6 +763,7 @@ def metrics():
         "# TYPE affinity_ranker_seconds summary",
         f"affinity_ranker_seconds_sum {_RANKER_TIMING['seconds_sum']:.6f}",
         f"affinity_ranker_seconds_count {_RANKER_TIMING['count']}",
+        *_ranker_model_metrics(),
         "# HELP affinity_cache_total API read-through cache outcomes.",
         "# TYPE affinity_cache_total counter",
         f'affinity_cache_total{{result="hit"}} {_COUNTERS["cache_hits"]}',

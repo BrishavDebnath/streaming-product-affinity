@@ -879,7 +879,11 @@ def test_compose_runs_the_whole_stack():
           all(m in api for m in ("affinity_pipeline_staleness_seconds",
                                  "affinity_kafka_lag_offsets",
                                  "affinity_batch_duration_ms",
-                                 "affinity_state_rows")
+                                 "affinity_state_rows",
+                                 "affinity_ranker_model_age_seconds",
+                                 "affinity_ranker_loaded",
+                                 "affinity_ranker_usable",
+                                 "affinity_ranker_fallback_total")
               if m in alerts))
 
 
