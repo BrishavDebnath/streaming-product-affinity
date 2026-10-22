@@ -127,10 +127,13 @@ def write_model(path, names=features.FEATURE_NAMES, window=None):
     rng = np.random.default_rng(0)
     X = rng.random((200, len(features.FEATURE_NAMES)))
     y = (X[:, 0] > 0.5).astype(int)                 # learns "more pairs is better"
-    model = lgb.LGBMRanker(objective="lambdarank", n_estimators=20, min_child_samples=5,
-                           verbose=-1).fit(X, y, group=[20] * 10)
+    # The native API, not LGBMRanker: that wrapper needs scikit-learn, which
+    # the API's own requirements do not include.
+    data = lgb.Dataset(X, y, group=[20] * 10)
+    booster = lgb.train({"objective": "lambdarank", "min_data_in_leaf": 5, "verbose": -1},
+                        data, num_boost_round=20)
     path.mkdir(parents=True, exist_ok=True)
-    model.booster_.save_model(str(path / "model.txt"))
+    booster.save_model(str(path / "model.txt"))
     (path / "metadata.json").write_text(json.dumps(
         {"version": "test", "feature_names": list(names)}), encoding="utf-8")
     ids = np.array([LAPTOP, XPS, SLEEVE, HUB, PHONE])

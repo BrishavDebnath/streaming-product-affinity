@@ -102,7 +102,10 @@ services:
     restart: "no"
 
   mongo:
-    image: mongo:8.0
+    # MongoDB 8.x refuses to start on Linux kernel 6.19 and newer (its
+    # TCMalloc, SERVER-121912). On such a host: MONGO_IMAGE=mongo:7.0, which
+    # this project's queries also run on. CI picks it from the runner's kernel.
+    image: ${MONGO_IMAGE:-mongo:8.0}
     container_name: affinity-mongodb
     # MongoDB would otherwise size its cache from all of Docker's memory.
     command: ["mongod", "--wiredTigerCacheSizeGB", "1"]

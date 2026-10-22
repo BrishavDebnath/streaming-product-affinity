@@ -72,6 +72,18 @@ jobs:
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+      # MongoDB 8.x exits at start on kernel 6.19+ ("MongoDB cannot start:
+      # Linux kernel versions 6.19 and newer..."), and hosted runners now
+      # sometimes boot one, so this job failed on some runs and not others.
+      - name: Pick a MongoDB the runner's kernel can start
+        run: |
+          kernel=$(uname -r | cut -d- -f1)
+          if [ "$(printf '%s\n' 6.19 "$kernel" | sort -V | head -n1)" = "6.19" ]; then
+            echo "MONGO_IMAGE=mongo:7.0" >> "$GITHUB_ENV"
+            echo "kernel $kernel: using mongo:7.0"
+          else
+            echo "kernel $kernel: using mongo:8.0"
+          fi
       - name: Start the stack
         run: docker compose up -d --build
       - name: Wait for the API

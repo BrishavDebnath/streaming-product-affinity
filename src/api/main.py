@@ -242,7 +242,7 @@ def _category_bestsellers(product_id: int, cutoff, exclude: set[int],
     minute = cutoff.replace(second=0, microsecond=0).isoformat() if cutoff else "all"
 
     def ranked_by_category():
-        counts, _ = _product_counts(cutoff)
+        counts, _ = _product_counts_cached(cutoff)
         index: dict[str, list[tuple[float, int]]] = {}
         for pid, events in counts.items():
             item = catalog.get(pid)
@@ -338,7 +338,7 @@ def _related(product_id: int, limit: int, score_by: str) -> dict:
                        "peak_users_per_window":
                            d.get("peak_users_per_window")} for d in agg]
 
-        counts, total = _product_counts(cutoff)
+        counts, total = _product_counts_cached(cutoff)
         ranked = scoring.score_pairs(candidates, counts, total,
                                      anchor_id=product_id, method=score_by)[:limit]
         rows = [{"product_id": r["related_product_id"],
@@ -465,6 +465,26 @@ def _learned(product_id: int, limit: int) -> tuple[dict | None, str | None]:
             "lookback_minutes": config.PAIR_LOOKBACK_MINUTES,
             "count": len(rows),
             "related_products": catalog.enrich(rows)}, None
+
+
+def _product_counts_cached(cutoff):
+    """`_product_counts`, computed once per minute of cutoff.
+
+    It sums every trending row in the lookback, about 0.8 s after a replayed
+    month, and ran on every co-occurrence answer: the p95 of /related-products
+    was 811 ms because of it. Windows start on whole minutes, so every cutoff
+    after 12:30:00 and up to 12:31:00 selects exactly the same rows; the key
+    is that next whole minute. It keeps the graph's longer TTL rather than
+    the default five seconds, because it is the same kind of whole-lookback
+    sum: at five seconds it expired between most requests.
+    """
+    if cutoff is None:
+        key = "all"
+    else:
+        floor = cutoff.replace(second=0, microsecond=0)
+        key = (floor if floor == cutoff else floor + timedelta(minutes=1)).isoformat()
+    return _cached(f"product-counts:{key}", lambda: _product_counts(cutoff),
+                   ttl=config.GRAPH_CACHE_SECONDS)
 
 
 def _product_counts(cutoff):

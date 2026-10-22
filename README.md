@@ -55,7 +55,7 @@ It answers "what goes with this item", not "what should this particular shopper 
 
 ## Quick start
 
-You need Docker Desktop (or Docker Engine with Compose v2.24+) with at least 8 GB of memory. The first build downloads Spark, the Kafka connector and the Python packages, so it takes several minutes.
+You need Docker Desktop (or Docker Engine with Compose v2.24+) with at least 8 GB of memory. The first build downloads Spark, the Kafka connector and the Python packages, so it takes several minutes. On a Linux host with kernel 6.19 or newer, MongoDB 8 won't start; run with `MONGO_IMAGE=mongo:7.0`.
 
 ```bash
 git clone https://github.com/BrishavDebnath/streaming-product-affinity.git

@@ -255,6 +255,21 @@ def test_unknown_product_is_rejected(client):
     assert str(UNKNOWN) in response.json()["detail"]
 
 
+def test_product_counts_are_summed_once_per_minute_not_per_request(api, client,
+                                                                   monkeypatch):
+    # Summing every trending row took ~0.8 s after a replayed month and ran on
+    # every co-occurrence answer.
+    add_pair(api, LAPTOP, SLEEVE, count=20)
+    add_pair(api, XPS, HUB, count=20)
+    add_trending(api, LAPTOP)
+    calls = []
+    real = api._product_counts
+    monkeypatch.setattr(api, "_product_counts", lambda cutoff: calls.append(cutoff) or real(cutoff))
+    client.get(f"/related-products/{LAPTOP}?score_by=lift")
+    client.get(f"/related-products/{XPS}?score_by=lift")
+    assert len(calls) == 1
+
+
 def test_ranking_method_is_chosen_by_the_caller(api, client):
     # The bestseller co-occurs more often, the accessory more than chance.
     add_pair(api, LAPTOP, PHONE, count=40, affinity=40)
