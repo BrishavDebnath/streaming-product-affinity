@@ -63,7 +63,13 @@ def parse_events(raw: DataFrame) -> DataFrame:
         F.from_json(F.col("value").cast("string"), EVENT_SCHEMA).alias("data"),
     )
 
-    flat = parsed.select("raw_value", "data.*")
+    # Did the parser recover ANY field? from_json turns text that is not JSON,
+    # and "{}", into a row of nulls, which the field checks below used to
+    # report as "missing_or_invalid:user_id": true, and no help to whoever is
+    # debugging the producer that sent it.
+    recovered = F.coalesce(*(F.col(f"data.{name}").cast("string")
+                             for name in EVENT_SCHEMA.fieldNames()))
+    flat = parsed.select("raw_value", "data.*", recovered.isNull().alias("_nothing_parsed"))
 
     # --- schema normalisation: fold every version onto the v1 field names ---
     flat = (
@@ -83,7 +89,8 @@ def parse_events(raw: DataFrame) -> DataFrame:
     )
 
     invalid_reason = (
-        F.when(~F.col("schema_version").isin(list(SUPPORTED_SCHEMA_VERSIONS)),
+        F.when(F.col("_nothing_parsed"), F.lit("not_json_or_empty"))
+        .when(~F.col("schema_version").isin(list(SUPPORTED_SCHEMA_VERSIONS)),
                F.concat(F.lit("unsupported_schema_version:"),
                         F.col("schema_version").cast("string")))
         .when(F.col("user_id").isNull(), F.lit("missing_or_invalid:user_id"))
@@ -109,6 +116,7 @@ def parse_events(raw: DataFrame) -> DataFrame:
         .withColumn("schema_version",
                     F.coalesce(F.col("schema_version"), F.lit(1)))
         .withColumn("channel", F.coalesce(F.col("channel"), F.lit("unknown")))
+        .drop("_nothing_parsed")
     )
 
 

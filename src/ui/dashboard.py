@@ -535,6 +535,8 @@ with right:
         learned_why = {"co_occurrence": "viewed together",
                        "category": "popular in the same category",
                        "item2vec": "appears in similar visits",
+                       "parent_category": "popular in a related category",
+                       "two_hop": "viewed with something viewed with this",
                        "bestsellers": "bestseller"}
         for r in data["related_products"]:
             if r.get("source") == "learned":

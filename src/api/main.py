@@ -420,13 +420,13 @@ def _ranker_model_metrics() -> list[str]:
     how old it is. The alerts in monitoring/alerts.yml read these."""
     ranker, _ = _ranker()
     usable = 0
+    try:
+        run = _cached("replay-run", lambda: _db["replay_runs"].find_one(
+            sort=[("finished_at", DESCENDING)]))
+    except PyMongoError:
+        run = None
     if ranker is not None:
-        try:
-            run = _cached("replay-run", lambda: _db["replay_runs"].find_one(
-                sort=[("finished_at", DESCENDING)]))
-            usable = int(ranker.check_window(run) is None)
-        except PyMongoError:
-            usable = 0
+        usable = int(ranker.check_window(run) is None)
     lines = [
         "# HELP affinity_ranker_loaded 1 when a trained re-ranker is loaded.",
         "# TYPE affinity_ranker_loaded gauge",
@@ -435,6 +435,12 @@ def _ranker_model_metrics() -> list[str]:
         "replayed window, so score_by=learned is really answering.",
         "# TYPE affinity_ranker_usable gauge",
         f"affinity_ranker_usable {usable}",
+        # On demo traffic there is no replay, and an unusable model is the
+        # expected state rather than an incident: RankerUnusable checks this.
+        "# HELP affinity_replay_recorded 1 when the pipeline holds a recorded "
+        "replay of real traffic.",
+        "# TYPE affinity_replay_recorded gauge",
+        f"affinity_replay_recorded {int(run is not None)}",
     ]
     trained = ranker.trained_at if ranker is not None else None
     if ranker is not None and trained is not None:
@@ -476,7 +482,8 @@ def _learned(product_id: int, limit: int) -> tuple[dict | None, str | None]:
                                    parent=ranker.parent, embeddings=ranker.embeddings),
                        ttl=config.RANKER_SNAPSHOT_SECONDS)
         nbrs = ranking_features.neighbours_from_mongo(_db, product_id, cutoff)
-        cands, matrix, origin = ranking_features.rows(product_id, nbrs, snap)
+        hop = ranking_features.two_hop_from_mongo(_db, product_id, nbrs, cutoff)
+        cands, matrix, origin = ranking_features.rows(product_id, nbrs, snap, hop)
     except PyMongoError as exc:
         _COUNTERS["errors_total"] += 1
         raise HTTPException(status_code=503, detail=str(exc)) from exc

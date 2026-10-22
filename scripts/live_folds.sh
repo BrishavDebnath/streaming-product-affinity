@@ -9,14 +9,43 @@
 #   2. on a clean stack, replay S to S+30 and retrain item2vec for it
 #   3. score learned and affinity on the same 3,000 visits from S+30 to S+37
 #
-# Each fold takes about 30 minutes. Results go to results/fold-S.json and
+# Each fold takes about 30 minutes. Results go to results/<model>.json and
 # leave docs/EVALUATION.md alone. Needs the dataset, the full catalogue and
 # requirements-ml.txt on the host (see README, "Is it any good?").
+#
+# To compare a new model with the previous one on the same pipeline data,
+# name an image of the previous API build and the model each fold should use:
+#
+#     MODEL_PREFIX=twohop BASELINE_IMAGE=streaming-product-affinity-api:old #     BASELINE_MODELS="2015-05-03=ranker 2015-06-02=fold-2015-06-02" #         bash scripts/live_folds.sh 2015-05-03 2015-06-02
+#
+# Each fold then also starts that image beside the API, serving its model,
+# and writes results/<model>-vs-baseline.json.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 export CATALOG_FILE=data/catalog_retailrocket.json
 PY=${PYTHON:-python}
+PREFIX=${MODEL_PREFIX:-fold}
+# Docker on Windows wants a Windows path for a bind mount; Git Bash has both.
+HOST_DIR=$(pwd -W 2>/dev/null || pwd)
+
+baseline_model() {                 # the BASELINE_MODELS entry for one start date
+    for pair in ${BASELINE_MODELS:-}; do
+        [ "${pair%%=*}" = "$1" ] && { echo "${pair#*=}"; return 0; }
+    done
+    return 1
+}
+
+start_baseline() {
+    docker rm -f affinity-api-baseline >/dev/null 2>&1 || true
+    MSYS_NO_PATHCONV=1 docker run -d --name affinity-api-baseline         --network streaming-product-affinity_default         -e MONGO_URI=mongodb://mongo:27017 -e CATALOG_FILE="$CATALOG_FILE"         -e RANKER_DIR="/app/models/$1"         -v "$HOST_DIR/data:/app/data:ro" -v "$HOST_DIR/models:/app/models:ro"         "$BASELINE_IMAGE" uvicorn src.api.main:app --host 0.0.0.0 --port 8000 >/dev/null
+    for _ in $(seq 1 60); do
+        docker exec affinity-api-baseline python -c             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"             >/dev/null 2>&1 && return 0
+        sleep 3
+    done
+    echo "the baseline API never came up" >&2
+    return 1
+}
 
 fresh_stack() {
     docker compose down -v
@@ -30,7 +59,7 @@ fresh_stack() {
 }
 
 for start in "$@"; do
-    model="fold-$start"
+    model="$PREFIX-$start"
     # Exported for every compose call in the fold, not only the API's own: a
     # `compose run` of a service that depends on the API recreates the API
     # whenever its configuration differs, which put the default model back
@@ -55,4 +84,12 @@ for start in "$@"; do
     docker compose run --rm evaluate --start "$start" --train-days 30 --test-days 7 \
         --score-by learned --compare-to affinity --no-report
     cp results/evaluation.json "results/$model.json"
+
+    if [ -n "${BASELINE_IMAGE:-}" ] && old=$(baseline_model "$start"); then
+        echo "=== fold $start: against the previous model ($old)"
+        start_baseline "$old"
+        docker compose run --rm evaluate --start "$start" --train-days 30 --test-days 7             --score-by learned --compare-to learned             --compare-url http://affinity-api-baseline:8000 --no-report
+        cp results/evaluation.json "results/$model-vs-baseline.json"
+        docker rm -f affinity-api-baseline >/dev/null
+    fi
 done

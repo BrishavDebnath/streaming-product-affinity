@@ -67,7 +67,12 @@ groups:
           description: "Retrain it: scripts/train_ranker.py, see README."
 
       - alert: RankerUnusable
-        expr: affinity_ranker_loaded == 1 and affinity_ranker_usable == 0
+        # Only with a replay of real traffic loaded: on demo traffic every
+        # model is unusable by design, and the alert fired for as long as the
+        # demo ran (found by stopping the producer and reading the alert page).
+        expr: >-
+          affinity_ranker_loaded == 1 and affinity_ranker_usable == 0
+          and affinity_replay_recorded == 1
         for: 5m
         labels:
           severity: warning

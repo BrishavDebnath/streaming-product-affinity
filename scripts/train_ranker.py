@@ -180,10 +180,13 @@ def main() -> int:
     X, y, groups = [], [], []
     found = 0
     neighbours: dict[int, dict[int, float]] = {}
+    two_hop: dict[int, dict[int, float]] = {}
     for case in cases:
-        if case.query not in neighbours:
-            neighbours[case.query] = features.neighbours_from_mongo(db, case.query, cutoff)
-        cands, matrix, _ = features.rows(case.query, neighbours[case.query], snap)
+        q = case.query
+        if q not in neighbours:
+            neighbours[q] = features.neighbours_from_mongo(db, q, cutoff)
+            two_hop[q] = features.two_hop_from_mongo(db, q, neighbours[q], cutoff)
+        cands, matrix, _ = features.rows(q, neighbours[q], snap, two_hop[q])
         if case.target not in cands:
             continue            # no positive to learn from
         found += 1

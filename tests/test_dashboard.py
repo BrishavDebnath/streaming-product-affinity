@@ -228,7 +228,8 @@ def test_the_learned_model_orders_the_rows_and_says_where_each_came_from(
     table = next(d.value for d in app.dataframe if "Why it's here" in d.value.columns)
     reasons = set(table["Why it's here"])
     assert reasons <= {"viewed together", "popular in the same category",
-                       "appears in similar visits", "bestseller"}, reasons
+                       "appears in similar visits", "popular in a related category",
+                       "viewed with something viewed with this", "bestseller"}, reasons
     assert "viewed together" in reasons
 
 

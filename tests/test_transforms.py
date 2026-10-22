@@ -110,6 +110,13 @@ def test_garbage_input_does_not_crash(spark):
     invalid = T.invalid_events(parsed).count()
     check("garbage payloads all route to the DLQ, none crash the job",
           valid == 0 and invalid == 3, f"valid={valid} invalid={invalid}")
+    reasons = {r["invalid_reason"] for r in T.invalid_events(parsed).collect()}
+    check("text that is not JSON, and an empty object, say so instead of "
+          "blaming a missing user_id", reasons == {"not_json_or_empty"}, str(reasons))
+    partial = T.parse_events(spark.createDataFrame([(b'{"user_id": 1001}',)], "value binary"))
+    reason = T.invalid_events(partial).collect()[0]["invalid_reason"]
+    check("a partial event still names its missing field",
+          reason == "missing_or_invalid:product_id", reason)
 
 
 # ---------------------------------------------------------------- trending
@@ -883,6 +890,7 @@ def test_compose_runs_the_whole_stack():
                                  "affinity_ranker_model_age_seconds",
                                  "affinity_ranker_loaded",
                                  "affinity_ranker_usable",
+                                 "affinity_replay_recorded",
                                  "affinity_ranker_fallback_total")
               if m in alerts))
 

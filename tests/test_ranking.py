@@ -112,6 +112,42 @@ def test_same_category_feature(stocked):
     assert matrix[cands.index(PHONE), col] == 0.0
 
 
+def test_two_hop_scores_sum_over_paths_and_skip_the_query():
+    # q goes with B (5) and C (2); B goes with Z (3) and back to q; C with Z (4).
+    nbrs = {"B": 5.0, "C": 2.0}
+    second = {"B": {"Z": 3.0, "q": 5.0}, "C": {"Z": 4.0}}
+    assert features.two_hop_scores("q", nbrs, second) == {"Z": 5 * 3 + 2 * 4}
+
+
+def test_two_hop_walks_the_pair_table(stocked):
+    # LAPTOP goes with HUB (2 co-views), HUB goes with PHONE (5): PHONE is two
+    # hops away. Through SLEEVE the only onward pair leads back to LAPTOP.
+    cutoff = features.anchored_cutoff(stocked)
+    nbrs = features.neighbours_from_mongo(stocked, LAPTOP, cutoff)
+    hop = features.two_hop_from_mongo(stocked, LAPTOP, nbrs, cutoff)
+    assert hop == {PHONE: 2 * 5}
+    cands, matrix, origin = features.rows(LAPTOP, nbrs, snapshot(stocked), hop)
+    assert origin[PHONE] == "two_hop"
+    row = matrix[cands.index(PHONE)]
+    assert row[features.FEATURE_NAMES.index("log_two_hop")] == pytest.approx(np.log1p(10))
+    assert row[features.FEATURE_NAMES.index("two_hop_rank")] == 0
+
+
+def test_parent_category_items_are_candidates_with_their_rank(stocked):
+    parent = {"laptop": "computers", "laptop-acc": "computers", "phone": "phones"}
+    snap = features.Snapshot.from_mongo(stocked, features.anchored_cutoff(stocked),
+                                        category_of=category_of, parent=parent,
+                                        embeddings=None)
+    # LAPTOP (50 views) and XPS (40) are laptops, SLEEVE (30) and HUB (20)
+    # accessories: all four sit under "computers".
+    assert snap.parent_top["computers"] == [LAPTOP, XPS, SLEEVE, HUB]
+    cands, matrix, origin = features.rows(XPS, {}, snap)
+    col = features.FEATURE_NAMES.index("parent_rank")
+    assert origin[SLEEVE] == "parent_category"
+    assert matrix[cands.index(SLEEVE), col] == 2
+    assert matrix[cands.index(PHONE), col] == features.ABSENT_RANK
+
+
 def test_embeddings_find_the_nearest_item():
     emb = features.Embeddings(np.array([1, 2, 3]),
                               np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]))
@@ -195,6 +231,7 @@ def test_learned_ranks_with_the_model(api, tmp_path):
     assert 'affinity_related_products_total{source="learned"} 1' in metrics
     assert "affinity_ranker_seconds_count 1" in metrics
     assert "affinity_ranker_loaded 1" in metrics and "affinity_ranker_usable 1" in metrics
+    assert "affinity_replay_recorded 1" in metrics
 
 
 def test_model_age_is_exported_for_the_stale_model_alert(api, tmp_path):
@@ -208,8 +245,10 @@ def test_model_age_is_exported_for_the_stale_model_alert(api, tmp_path):
     line = next(x for x in metrics.splitlines()
                 if x.startswith("affinity_ranker_model_age_seconds{"))
     assert 8 * 86400 - 60 < float(line.split()[-1]) < 8 * 86400 + 60
-    # No replay on record: loaded, but not usable for what is served.
+    # No replay on record: loaded, but not usable for what is served, and the
+    # alert's third condition says that is the demo, not an incident.
     assert "affinity_ranker_loaded 1" in metrics and "affinity_ranker_usable 0" in metrics
+    assert "affinity_replay_recorded 0" in metrics
 
 
 def test_no_model_exports_not_loaded(api):

@@ -249,6 +249,10 @@ def main() -> int:
                         help="with --source api, also score this ranking on the same "
                              "cases and report the difference with a paired "
                              "bootstrap 95%% interval")
+    parser.add_argument("--compare-url", default=None,
+                        help="ask another API for the --compare-to ranking, such as "
+                             "an older build serving the previous model, so two "
+                             "models are compared on the same pipeline data")
     parser.add_argument("--allow-window-mismatch", action="store_true",
                         help="evaluate even when the training window is not "
                              "the one that was replayed (the result will "
@@ -334,17 +338,29 @@ def main() -> int:
 
     comparison = None
     if args.compare_to and args.source == "api":
-        other = ApiRecommender(config.API_BASE_URL, args.k, args.compare_to)
+        other = ApiRecommender(args.compare_url or config.API_BASE_URL, args.k,
+                               args.compare_to)
         mine = ev.hits_per_case(cases, recommender, args.k)
         theirs = ev.hits_per_case(cases, other, args.k)
         gain, lo, hi = ev.paired_bootstrap(mine, theirs)
-        comparison = {"against": args.compare_to, "their_hit_rate": sum(theirs) / len(theirs),
+        comparison = {"against": args.compare_to, "against_url": args.compare_url,
+                      "their_hit_rate": sum(theirs) / len(theirs),
                       "gain_points": round(100 * gain, 2),
                       "interval_points": [round(100 * lo, 2), round(100 * hi, 2)],
                       "their_sources": dict(other.sources)}
-        log.info("%s vs %s on the same %s cases: %+.2f points (95%% interval %+.2f to "
-                 "%+.2f)", args.score_by, args.compare_to, f"{len(cases):,}",
-                 100 * gain, 100 * lo, 100 * hi)
+        log.info("%s vs %s%s on the same %s cases: %+.2f points (95%% interval %+.2f to "
+                 "%+.2f)", args.score_by, args.compare_to,
+                 f" at {args.compare_url}" if args.compare_url else "",
+                 f"{len(cases):,}", 100 * gain, 100 * lo, 100 * hi)
+        # The same guard as above, for the other side: a refused baseline
+        # model would make any gain look like a gain over affinity.
+        if (args.compare_to == "learned"
+                and other.sources.get("learned", 0) < sum(other.sources.values()) / 2):
+            reason, _ = (other.unavailable.most_common(1) or [("unknown", 0)])[0]
+            log.error("the comparison's learned ranking was answered by its model for "
+                      "only %s products; that API said: %s",
+                      other.sources.get("learned", 0), reason)
+            return 1
 
     # A serving layer that does not recognise the products is not a model
     # scoring zero - it is a misconfiguration, and reporting 0.000% as a
