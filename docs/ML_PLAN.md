@@ -13,10 +13,10 @@ Written September 2026, after v1.0.0, and updated in October 2026.
    Grafana has a row for them, and `monitoring/alerts.yml` has three alerts:
    `RankerModelStale`, `RankerUnusable` and `RankerFallingBack`.
 
-Live, through the API on the published split, the re-ranker scored 34.00%
-hit-rate@10 against 26.23% for affinity on the same 3,000 cases: +7.77
-points, 95% interval +6.43 to +9.00. That is one test week; phase 4 asks for
-three. Details are in [EVALUATION.md](EVALUATION.md).
+Live, through the API, the re-ranker beat affinity on three separate test
+weeks, each with its own model: +7.77, +7.40 and +8.70 points of
+hit-rate@10, with every 95% interval above +6. That is phase 4's "done"
+condition. Details are in [EVALUATION.md](EVALUATION.md).
 
 The offline numbers below were measured on the RetailRocket data with the
 scripts in [experiments/ml-feasibility/](../experiments/ml-feasibility/), and

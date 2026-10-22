@@ -118,7 +118,7 @@ The demo traffic is synthetic, so its "right answer" is the generator's own rule
 | Global bestsellers | 0.73% | 100% |
 <!-- results:end -->
 
-Category bestsellers is the baseline to beat. Co-occurrence alone doesn't beat it: it answers only 64% of queries. Combined with the category fill it wins by 5.4 points. The re-ranker adds **7.8 points** on top of that, on the same cases (95% interval +6.4 to +9.0, paired bootstrap). That's one test week. It answers in 11.7 ms at the median over HTTP. Details, the training windows, and caveats are in [docs/EVALUATION.md](docs/EVALUATION.md).
+Category bestsellers is the baseline to beat. Co-occurrence alone doesn't beat it: it answers only 64% of queries. Combined with the category fill it wins by 5.4 points. The re-ranker adds **7.8 points** on top of that, on the same cases (95% interval +6.4 to +9.0, paired bootstrap). On two more test weeks, each with its own model, it gained 7.4 and 8.7 points, every interval well above zero. It answers in 11.7 ms at the median over HTTP. Details, the training windows, and caveats are in [docs/EVALUATION.md](docs/EVALUATION.md).
 
 One guard matters more than any number. If you evaluate a different window from the one replayed, you test the pipeline on its own training days. That scored 35.1% instead of the true 17.4%, and nothing errored ([bug 8](DEFECTS_FIXED.md)). So `replay.py` records what it sent, and `evaluate.py` and `train_ranker.py` both refuse a mismatch.
 

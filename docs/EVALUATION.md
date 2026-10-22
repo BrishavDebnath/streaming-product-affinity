@@ -59,12 +59,35 @@ on days the pipeline held. The 34.0% came from the re-ranker on days 30 to
 37, while the pipeline held days 0 to 30, and `evaluate.py` refused to run
 until the manifest said so.
 
+### Three separate test weeks
+
+One week can be luck, so the same procedure ran on two more windows, each
+with its own model trained on its own days (`scripts/live_folds.sh
+2015-06-02 2015-07-02`). Every row is 3,000 held-out visits scored both ways
+through the API, with a paired bootstrap over those visits.
+
+| Test week | Learned | Affinity | Category bestsellers | Gain | 95% interval |
+|---|---:|---:|---:|---:|---|
+| days 30 to 37 (replay from 2015-05-03) | 34.00% | 26.23% | 20.77% | **+7.77** | +6.43 to +9.00 |
+| days 60 to 67 (replay from 2015-06-02) | 30.50% | 23.10% | 18.60% | **+7.40** | +6.13 to +8.70 |
+| days 90 to 97 (replay from 2015-07-02) | 30.00% | 21.30% | 18.53% | **+8.70** | +7.37 to +10.00 |
+
+In every week the model answered every query product itself, with no
+fallbacks. Candidate recall on the training labels was 47.0%, 45.9% and
+36.9%; the third window has more visits and more items the earlier days
+never showed.
+
 Offline, the re-ranker gained 3.0 to 3.6 points ([ML_PLAN.md](ML_PLAN.md)).
-Live it gained 7.8. The likeliest reason is the candidate pool. Offline the
-ranker drew co-occurrence candidates only from pairs seen at least 3 times;
-live it takes every pair and lets `passes_min_pairs` weigh the thin ones.
-That raised candidate recall on the training labels to 47.0%. This is one
-test week; the offline run checked three.
+Live it gains 7.4 to 8.7. The likeliest reason is the candidate pool:
+offline the ranker drew co-occurrence candidates only from pairs seen at
+least 3 times, while live it takes every pair and lets `passes_min_pairs`
+weigh the thin ones. That is an explanation, not a measurement.
+
+A first run of the two extra weeks reported "+0.00 points" for one of them.
+The fold script had let the evaluation restart the API with another
+window's model, which the API refused, so every learned answer was
+affinity's. `evaluate.py` now exits with an error when the model answers
+under half the queries, and prints the API's reason.
 
 The features that carried the model, by gain: the share of the query's pairs
 that go to the candidate, same parent category, lift, rank among the query's
