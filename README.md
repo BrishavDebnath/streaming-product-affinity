@@ -39,15 +39,16 @@ It answers "what goes with this item", not "what should this particular shopper 
 
 ## Demo
 
-![A 45-second walkthrough: clicking products, the clicks arriving in the pipeline, and hovering over the affinity graph](docs/screenshots/demo.gif)
+![A walk down the dashboard on real RetailRocket traffic, ending with related products ranked by the learned model](docs/screenshots/demo.gif)
 
-*Clicking View and Add to cart sends real events to Kafka. Pointing at a line in the graph shows how many times that pair was seen together.*
+*The dashboard on a replayed month of real traffic: pipeline health, events per minute, trending, and related products switched to the learned model, with the source behind each suggestion.*
 
 <details>
 <summary>More screenshots: pipeline health, the affinity graph, the whole dashboard</summary>
 
 ![Pipeline health: processing delay, events per second, events per minute](docs/screenshots/pipeline-health.png)
 ![Affinity graph on the demo traffic](docs/screenshots/affinity-graph.png)
+![Related products ranked by the learned model](docs/screenshots/related-learned.png)
 ![The affinity graph on real RetailRocket traffic](docs/screenshots/real-data-graph.png)
 ![The full dashboard](docs/screenshots/dashboard.png)
 
@@ -96,8 +97,8 @@ Settings live in `.env` (copy `.env.example`); every value has a default. On mac
 
 **The learned re-ranker** (`score_by=learned`, [src/ranking/](src/ranking/)):
 
-1. Candidates come from four sources: co-occurrence with no minimum count, the category's top items, item2vec neighbours, and global bestsellers. That's about 60 per query.
-2. Sixteen features per candidate, all from aggregates Spark already writes: pair count, lift, share of the query's pairs, same category or parent category, popularity, recent popularity, cart rate and item2vec similarity. To support them, trending rows now carry separate view, cart and purchase counts.
+1. Candidates come from six sources: co-occurrence with no minimum count, the category's top items, item2vec neighbours, the parent category's top items, two-hop co-occurrence (the query goes with B, B goes with C), and global bestsellers. That's about 80 per query.
+2. Nineteen features per candidate, all from aggregates Spark already writes: pair count, lift, share of the query's pairs, same category or parent category, popularity, recent popularity, cart rate, item2vec similarity, and the two-hop score. Trending rows carry separate view, cart and purchase counts to support them.
 3. A LightGBM LambdaRank model orders them.
 
 The trainer and the API call the same feature function, so training and serving can't drift apart. The API refuses a model whose feature list differs from the code's, and item2vec vectors trained on a different replay window. In both cases it answers with plain affinity and says why.
@@ -109,16 +110,27 @@ The dashboard's Related products panel switches between times seen together, lif
 The demo traffic is synthetic, so its "right answer" is the generator's own rule. Quality is measured on [RetailRocket](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset) instead: 2.7M real events from a real shop. Replay 30 days through Kafka, then test on the 7 days after, which the pipeline never saw. For each held-out visit, ask the live API about the first product. It's a hit if the next product the shopper viewed is in the top 10.
 
 <!-- results:start -->
-| 3,000 held-out visits | hit-rate@10 | Coverage |
+| 3,000 held-out visits, days 30–37 | hit-rate@10 | Coverage |
 |---|---:|---:|
-| **Pipeline, learned re-ranker** (`score_by=learned`) | **34.0%** | 100% |
-| Pipeline: co-occurrence, then category fill (`score_by=affinity`) | 26.2% | 100% |
-| Pipeline: co-occurrence only | 19.7% | 64% |
-| Category bestsellers (top 10 of the query's category) | 20.8% | 100% |
-| Global bestsellers | 0.73% | 100% |
+| **Learned re-ranker, v1.2** (six candidate sources, 19 features) | **35.7%** | 100% |
+| Learned re-ranker, v1.1 (four sources, 16 features) | 34.4% | 100% |
+| Co-occurrence, then category fill (`score_by=affinity`) | 25.6% | 100% |
+| Co-occurrence only¹ | 19.7% | 64% |
+| Category bestsellers (top 10 of the query's category) | 20.4% | 100% |
+| Global bestsellers | 0.57% | 100% |
+
+¹ From the September run of the same split.
 <!-- results:end -->
 
-Category bestsellers is the baseline to beat. Co-occurrence alone doesn't beat it: it answers only 64% of queries. Combined with the category fill it wins by 5.4 points. The re-ranker adds **7.8 points** on top of that, on the same cases (95% interval +6.4 to +9.0, paired bootstrap). On two more test weeks, each with its own model, it gained 7.4 and 8.7 points, every interval well above zero. It answers in 11.7 ms at the median over HTTP. Details, the training windows, and caveats are in [docs/EVALUATION.md](docs/EVALUATION.md).
+Category bestsellers is the baseline to beat. Co-occurrence alone doesn't beat it: it answers only 64% of queries. Combined with the category fill it wins by about 5 points. The learned re-ranker adds 8 to 10 points on top of that, on three separate test weeks, each with its own model and every 95% interval well above zero:
+
+| Test week | v1.2 vs affinity | v1.2 vs v1.1 (same data) |
+|---|---|---|
+| days 30–37 | +10.13 (+8.70 to +11.47) | **+1.33** (+0.47 to +2.17) |
+| days 60–67 | +8.07 (+6.77 to +9.37) | +0.57 (−0.33 to +1.53) |
+| days 90–97 | +8.77 (+7.47 to +10.03) | +0.10 (−0.67 to +0.90) |
+
+The newest candidate sources, two-hop and parent category, put the right answer among the candidates 2 to 3 points more often every week. The model turned only some of that into hits: about +0.7 points pooled over the three weeks, and clearly above zero only in the first. It's a small gain, honestly measured, and never a loss. It answers in 12.9 ms at the median over HTTP. Details, the training windows, and caveats are in [docs/EVALUATION.md](docs/EVALUATION.md); what changed when is in the [changelog](CHANGELOG.md).
 
 One guard matters more than any number. If you evaluate a different window from the one replayed, you test the pipeline on its own training days. That scored 35.1% instead of the true 17.4%, and nothing errored ([bug 8](DEFECTS_FIXED.md)). So `replay.py` records what it sent, and `evaluate.py` and `train_ranker.py` both refuse a mismatch.
 
@@ -136,6 +148,8 @@ python scripts/train_ranker.py --train-days 30 --embeddings-only
 docker compose run --rm evaluate --train-days 30 --score-by learned --compare-to affinity
 ```
 
+`scripts/live_folds.sh` runs that whole sequence for any test week, and can score a previous model beside the new one on the same data.
+
 ## Performance
 
 On one 8-core laptop with 12 GB for Docker, everything sharing the same cores ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
@@ -146,7 +160,7 @@ On one 8-core laptop with 12 GB for Docker, everything sharing the same cores ([
 
 ## Tests
 
-150 tests, none needing Kafka or MongoDB: Spark transforms and a real streaming query on a local `SparkSession`, the API and the re-ranker over mongomock, the dashboard through Streamlit's `AppTest`, and the replay and evaluation maths. CI runs `ruff`, `mypy` and the suite on Python 3.11 and 3.12, then starts the whole stack and runs the end-to-end check.
+160 tests, none needing Kafka or MongoDB: Spark transforms and a real streaming query on a local `SparkSession`, the API and the re-ranker over mongomock, the dashboard through Streamlit's `AppTest`, and the replay and evaluation maths. CI runs `ruff`, `mypy` and the suite on Python 3.11 and 3.12, then starts the whole stack and runs the end-to-end check.
 
 ```bash
 pip install -r requirements-test.txt   # needs Java 17+ for the Spark tests
@@ -162,7 +176,7 @@ ruff check . && mypy
 | `GET /trending?limit=&minutes=` | top products over the last N minutes |
 | `GET /graph` | co-occurrence as nodes and edges |
 | `GET /pipeline`, `/throughput`, `/stats` | processing delay, measured rate, counters |
-| `GET /health`, `/metrics` | liveness, and Prometheus metrics including the re-ranker's latency and fallbacks |
+| `GET /health`, `/metrics` | liveness, and Prometheus metrics including the re-ranker's latency, fallbacks and model age |
 
 ## Layout
 

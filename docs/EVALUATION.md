@@ -89,13 +89,45 @@ window's model, which the API refused, so every learned answer was
 affinity's. `evaluate.py` now exits with an error when the model answers
 under half the queries, and prints the API's reason.
 
+### v1.2: two-hop and parent-category candidates
+
+Two more candidate sources: products two steps away through the query's
+strongest co-occurrences, and the most viewed items one level up the
+category tree, with three features describing them (19 in all). Each test
+week trained its own v1.2 model, and the previous model (v1.1) was served
+beside it from the previous build's image on the same replay, so the two
+were scored on identical pipeline data and identical visits
+(`scripts/live_folds.sh` with `BASELINE_IMAGE`):
+
+| Test week | Candidate recall, v1.1 → v1.2 | v1.2 | v1.1 | Affinity | v1.2 vs v1.1 (95% interval) |
+|---|---|---:|---:|---:|---|
+| days 30 to 37 | 47.0% → 49.3% | 35.70% | 34.37% | 25.57% | **+1.33** (+0.47 to +2.17) |
+| days 60 to 67 | 45.9% → 49.0% | 31.07% | 30.50% | 23.00% | +0.57 (−0.33 to +1.53) |
+| days 90 to 97 | 36.9% → 38.8% | 30.20% | 30.10% | 21.43% | +0.10 (−0.67 to +0.90) |
+
+The new sources raise the ceiling every week: the right item is among the
+candidates 2 to 3 points more often. The model converts little of that into
+hits. Pooled over the three weeks the gain is about +0.67 points (roughly
++0.17 to +1.16, treating the weeks as independent), and only the first week's
+interval clears zero on its own. Offline the plan expected two-hop alone to
+add half a point of recall, so the recall gain is larger than predicted and
+the hit-rate gain small. It ships because it is never worse and costs about
+1 ms at the median; it is not a headline improvement.
+
+Week 1 here starts at midnight on 2015-05-03 (`--start 2015-05-03`). The
+three-week table above started it at the dataset's first event, 03:00 UTC,
+so its held-out visits differ slightly, which is why the baselines differ in
+the first decimal. Every comparison inside one table is on identical cases.
+
 The features that carried the model, by gain: the share of the query's pairs
 that go to the candidate, same parent category, lift, rank among the query's
 co-occurrences, the query's popularity, same category, item2vec similarity
 and cart rate.
 
 Latency, measured over HTTP on 300 random catalogue items after the cache
-was warm: **11.7 ms at the median and 34.1 ms at the 95th percentile**. The
+was warm: **11.7 ms at the median and 34.1 ms at the 95th percentile** for
+v1.1, and **12.9 ms and 39.5 ms** for v1.2, whose two-hop lookup adds one
+MongoDB query per request. The
 ranker's own work (features plus LightGBM) averaged about 2 ms. The first
 request after a restart takes about 5 s, because it builds the whole-window
 aggregates, which are then cached for `RANKER_SNAPSHOT_SECONDS`.

@@ -84,6 +84,19 @@ class Ranker:
         return None
 
 
+def feature_difference(model: tuple, code: tuple) -> str:
+    """Say which features differ, not all of them: the first version of this
+    message printed both full lists and left the reader to compare them."""
+    only_model = [n for n in model if n not in code]
+    only_code = [n for n in code if n not in model]
+    parts = []
+    if only_model:
+        parts.append(f"only in the model: {', '.join(only_model)}")
+    if only_code:
+        parts.append(f"only in the code: {', '.join(only_code)}")
+    return "; ".join(parts) or "the same names in a different order"
+
+
 def load(directory: str | Path) -> Ranker:
     """Load a model directory, or raise ModelError saying what is wrong."""
     path = Path(directory)
@@ -93,8 +106,9 @@ def load(directory: str | Path) -> Ranker:
     metadata = json.loads(meta_file.read_text(encoding="utf-8"))
     names = tuple(metadata.get("feature_names", ()))
     if names != features.FEATURE_NAMES:
-        raise ModelError(f"the model was trained on features {list(names)}, but this "
-                         f"code computes {list(features.FEATURE_NAMES)}; retrain it")
+        raise ModelError(f"the model's features differ from this code's "
+                         f"({feature_difference(names, features.FEATURE_NAMES)}); "
+                         f"retrain it")
 
     import lightgbm as lgb  # only needed once a model exists
 

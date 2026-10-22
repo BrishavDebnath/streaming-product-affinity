@@ -518,7 +518,11 @@ with right:
                      "learned": "Learned model"}.get,
         help="Learned is a LightGBM model trained on real RetailRocket traffic. "
              "On the demo catalogue it is not available, and the page says so.")
-    data = api(f"/related-products/{target}?limit=8&score_by={ranked_by}", quiet=True)
+    # The learned ranker's first answer after its cache expires rebuilds the
+    # whole-window aggregates (4.6-4.9 s measured), and the default 5 s timeout
+    # turned that into "No data for this product yet" now and then.
+    data = api(f"/related-products/{target}?limit=8&score_by={ranked_by}", quiet=True,
+               timeout=30 if ranked_by == "learned" else 5)
     if data is None:
         st.info("No data for this product yet.")
     if data and data.get("window") == "latest_available":

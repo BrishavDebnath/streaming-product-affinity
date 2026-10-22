@@ -186,8 +186,17 @@ def test_a_missing_model_is_reported_not_raised_later(tmp_path):
 
 def test_a_model_trained_on_other_features_is_refused(tmp_path):
     write_model(tmp_path, names=("pair_n", "something_else"))
-    with pytest.raises(ranking_model.ModelError, match="retrain"):
+    with pytest.raises(ranking_model.ModelError, match="retrain") as refused:
         ranking_model.load(tmp_path)
+    # Only the differences are named, not both full lists.
+    message = str(refused.value)
+    assert "only in the model: something_else" in message
+    assert "only in the code: log_pair_n" in message and "this code computes" not in message
+
+
+def test_a_reordered_feature_list_is_refused_and_says_so():
+    names = features.FEATURE_NAMES
+    assert ranking_model.feature_difference(names[::-1], names) ==         "the same names in a different order"
 
 
 def test_vectors_from_another_window_are_refused(tmp_path):

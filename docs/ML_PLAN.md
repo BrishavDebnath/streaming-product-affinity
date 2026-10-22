@@ -250,9 +250,14 @@ harness.
 
 ### Later, only if the numbers ask for it
 
-- Parent-category and two-hop candidates (about 1.9 more points of recall
-  offline).
-- MLflow for tracking runs, once there is more than one model to compare.
+- ~~Parent-category and two-hop candidates~~ **Built in v1.2.** Offline
+  they added about 1.4 points of candidate recall. Live they added 1.9 to
+  3.1, but only about +0.7 points of hit-rate@10, clearly above zero in one
+  of three weeks ([EVALUATION.md](EVALUATION.md)). The ceiling rose more
+  than the model used it; a ranker that learns more from the new features
+  is the next thing to try.
+- MLflow for tracking runs. There are now two models to compare, so this is
+  closer to worth doing.
 - A sequence model, only on a dataset with longer visits.
 
 ## Risks
