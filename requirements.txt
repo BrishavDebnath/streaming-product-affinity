@@ -15,7 +15,7 @@ kafka-python>=3.0.11      # Kafka 4.x protocol support
 pymongo>=4.8,<5.0
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.54.0
-streamlit>=1.50        # width="stretch"
+streamlit>=1.66.0        # width="stretch"
 pandas>=2.0,<3.0
 requests>=2.32
 python-dotenv>=1.0
