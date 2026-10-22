@@ -100,6 +100,8 @@ class ApiRecommender:
         self.session = requests.Session()
         self.cache: dict[int, list[int]] = {}
         self.sources: Counter = Counter()
+        # Why score_by=learned answered as affinity, when it did.
+        self.unavailable: Counter = Counter()
 
     def __call__(self, product_id: int) -> list[int]:
         if product_id in self.cache:
@@ -121,6 +123,8 @@ class ApiRecommender:
         if source == "co_occurrence" and body.get("filled_from_category"):
             source = "co_occurrence_plus_category"
         self.sources[source] += 1
+        if body.get("learned_unavailable"):
+            self.unavailable[body["learned_unavailable"]] += 1
         items = [row["product_id"] for row in body.get("related_products", [])]
         self.cache[product_id] = items
         return items
@@ -315,6 +319,18 @@ def main() -> int:
                                          widen=not args.strict_lookback))
     model = ev.evaluate(f"pipeline ({args.source})", cases, recommender, args.k)
     ratio = ev.lift(model, baseline)
+
+    # The same idea for the re-ranker: a model the API refused is not a model
+    # that scored like affinity. A fold once reported "+0.00 points" because
+    # the API had been restarted with another window's model.
+    asked = sum(recommender.sources.values())      # distinct products, not cases
+    if (isinstance(recommender, ApiRecommender) and args.score_by == "learned"
+            and asked and recommender.sources.get("learned", 0) < asked / 2):
+        reason, _ = (recommender.unavailable.most_common(1) or [("unknown", 0)])[0]
+        log.error("score_by=learned was answered by the model for only %s of %s "
+                  "query products; the API said: %s", recommender.sources.get("learned", 0),
+                  asked, reason)
+        return 1
 
     comparison = None
     if args.compare_to and args.source == "api":

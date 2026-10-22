@@ -31,6 +31,11 @@ fresh_stack() {
 
 for start in "$@"; do
     model="fold-$start"
+    # Exported for every compose call in the fold, not only the API's own: a
+    # `compose run` of a service that depends on the API recreates the API
+    # whenever its configuration differs, which put the default model back
+    # and made every learned answer fall back.
+    export RANKER_MODEL="$model"
     echo "=== fold $start: training window"
     fresh_stack
     docker compose run --rm replay --start "$start" --days 23
@@ -43,7 +48,7 @@ for start in "$@"; do
     sleep 60
     "$PY" scripts/train_ranker.py --start "$start" --train-days 30 --embeddings-only \
         --out "models/$model"
-    RANKER_MODEL="$model" docker compose up -d --force-recreate --no-deps api
+    docker compose up -d --force-recreate --no-deps api
     for _ in $(seq 1 60); do curl -fs 127.0.0.1:8000/health >/dev/null && break; sleep 3; done
 
     echo "=== fold $start: evaluation"

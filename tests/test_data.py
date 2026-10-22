@@ -468,15 +468,9 @@ def test_the_mongo_source_does_not_decay_with_the_clock(monkeypatch):
     assert strict.sources["no_pairs"] == 1
 
 
-def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
-                                                              monkeypatch,
-                                                              caplog):
-    """Serving the demo catalogue makes every real item a 404. Reporting
-    0.000% for that would be a measurement of nothing."""
+def tiny_events_csv(tmp_path):
+    """Two training days of visits viewing 500 then 600, then a test day."""
     import csv
-    import sys
-
-    script = load_script("evaluate.py")
 
     day = 86_400
     start = 1_430_622_000
@@ -496,6 +490,18 @@ def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
         writer = csv.DictWriter(handle, fieldnames=rr.EVENT_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
+    return events_csv
+
+
+def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
+                                                              monkeypatch,
+                                                              caplog):
+    """Serving the demo catalogue makes every real item a 404. Reporting
+    0.000% for that would be a measurement of nothing."""
+    import sys
+
+    script = load_script("evaluate.py")
+    events_csv = tiny_events_csv(tmp_path)
 
     class NotFoundApi:
         """What /related-products does for a product it has no catalogue for."""
@@ -522,6 +528,39 @@ def test_an_api_that_knows_no_products_is_an_error_not_a_zero(tmp_path,
         assert script.main() == 1, "a 404 for every product is not a result"
     assert not (tmp_path / "EVALUATION.md").exists(), "no report from a non-result"
     assert "CATALOG_FILE" in caplog.text, "the message has to name the fix"
+
+
+def test_a_learned_run_the_model_never_answered_is_an_error_not_a_zero(
+        tmp_path, monkeypatch, caplog):
+    """An API that refused its model answers score_by=learned as affinity.
+    Scoring that as "the re-ranker" once reported +0.00 points."""
+    import sys
+
+    script = load_script("evaluate.py")
+    events_csv = tiny_events_csv(tmp_path)
+
+    class RefusingApi:
+        def __init__(self, *_args, **_kwargs):
+            self.sources = __import__("collections").Counter()
+            self.unavailable = __import__("collections").Counter()
+
+        def __call__(self, _product_id):
+            self.sources["co_occurrence"] += 1
+            self.unavailable["the vectors were trained on another window"] += 1
+            return [600]
+
+    monkeypatch.setattr(script, "ApiRecommender", RefusingApi)
+    monkeypatch.setattr(script, "replayed_window", lambda: None)
+    monkeypatch.setattr(script, "REPORT", tmp_path / "EVALUATION.md")
+    monkeypatch.setattr(script, "RESULTS", tmp_path / "results")
+    monkeypatch.setattr(sys, "argv", [
+        "evaluate.py", "--events", str(events_csv), "--train-days", "2",
+        "--test-days", "1", "--source", "api", "--score-by", "learned"])
+
+    with caplog.at_level("ERROR"):
+        assert script.main() == 1
+    assert not (tmp_path / "EVALUATION.md").exists()
+    assert "another window" in caplog.text, "the message has to give the API's reason"
 
 
 def test_the_scripts_exist_and_say_how_they_are_run():
