@@ -1281,15 +1281,18 @@ def test_monitoring_config_is_consistent():
                                        "dashboards", "pipeline.json"),
                           encoding="utf-8"))
     check("datasource declares a fixed uid", "uid: affinity-prometheus" in ds)
-    uids = {p["datasource"]["uid"] for p in dash["panels"]}
+    # Rows are headings: no datasource, no queries.
+    panels = [p for p in dash["panels"] if p.get("type") != "row"]
+    uids = {p["datasource"]["uid"] for p in panels}
     check("every panel points at that uid", uids == {"affinity-prometheus"}, str(uids))
 
     api = open(os.path.join(root, "src", "api", "main.py"),
                encoding="utf-8").read()
     import re as _re
     charted = set()
-    for p in dash["panels"]:
-        charted |= set(_re.findall(r"affinity_[a-z_]+", p["targets"][0]["expr"]))
+    for p in panels:
+        for target in p["targets"]:
+            charted |= set(_re.findall(r"affinity_[a-z_]+", target["expr"]))
     missing = sorted(m for m in charted if m not in api)
     check("every charted metric is actually emitted by the API",
           not missing, f"charted but never emitted: {missing}")
