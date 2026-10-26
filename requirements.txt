@@ -18,7 +18,7 @@ uvicorn[standard]>=0.54.0
 streamlit>=1.66.0        # width="stretch"
 pandas>=3.0.6,<4.0
 requests>=2.32
-python-dotenv>=1.0
+python-dotenv>=1.2.4
 # The API scores candidates with the trained re-ranker (src/ranking).
 numpy>=1.26
 lightgbm>=4.5
