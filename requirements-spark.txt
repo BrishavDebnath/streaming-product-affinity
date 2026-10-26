@@ -6,6 +6,6 @@
 #
 # PySpark is already in the image.
 
-pymongo>=4.8,<5.0        # Mongo sinks and the progress listener
+pymongo>=4.19.0,<5.0        # Mongo sinks and the progress listener
 python-dotenv>=1.0       # reads .env (src/common/config.py)
 kafka-python>=3.0.11        # imported by src/common/kafka_io.py, which the tests cover
